@@ -153,18 +153,18 @@ and no `ora-agent-bridge` console command; the checkout is the installation:
 ```sh
 git clone https://github.com/ora-commons/ora-agent-bridge.git
 cd ora-agent-bridge
-git checkout v1.5.1
+git checkout v1.6.0
 ```
 
-`v1.5.1` is this release's tag. Run every Bridge command from the absolute
+`v1.6.0` is this release's tag. Run every Bridge command from the absolute
 checkout root with `python3 -m ora_agent_bridge ...`. These instructions need no
 private repository and no personal settings.
 
 ## Identify your version
 
-Open `ora_agent_bridge/__init__.py` in the checkout. The `VERSION = "1.5.1"` line
+Open `ora_agent_bridge/__init__.py` in the checkout. The `VERSION = "1.6.0"` line
 names the release you have. For a clean release checkout, the Git tag you
-selected (`git checkout v1.5.1` above) and that line agree. There is no
+selected (`git checkout v1.6.0` above) and that line agree. There is no
 `--version` command.
 
 ## A complete work-mode walkthrough
