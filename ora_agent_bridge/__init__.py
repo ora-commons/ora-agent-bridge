@@ -12,8 +12,8 @@ SPDX-License-Identifier: CC0-1.0
 #: `Bridge-Format:` so a later reader can tell which layout it is looking at.
 BRIDGE_FORMAT = 2
 
-#: Release version of this source tree. This is release 1.5.1.
-VERSION = "1.5.1"
+#: Release version of this source tree. This is release 1.6.0.
+VERSION = "1.6.0"
 
 __version__ = VERSION
 

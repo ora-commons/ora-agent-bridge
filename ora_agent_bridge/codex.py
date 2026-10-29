@@ -781,3 +781,115 @@ def build_work_command(
         response_parser=parse_response,
         complete_failure_reason=True,
     )
+
+
+def run_work_input(command, body, controls, report, record_input, access_paths, attachments, model, effort):
+    """One owned native turn; steer only its matching active turn, never queue."""
+    import queue
+    from .peer import start_call, CompletedCall, HEARTBEAT_SECONDS
+
+    argv = [command.argv[0], "app-server"]
+    with start_call(argv, command.cwd, command.env, "", open_stdin=True) as call:
+        def send(identifier, method, params):
+            message = {"method": method, "params": params}
+            if identifier is not None:
+                message["id"] = identifier
+            call._process.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+            call._process.stdin.flush()
+
+        pending, events = {}, []
+        thread, turn, answer, completed = None, None, None, False
+        fragment, next_id, next_heartbeat = b"", 4, HEARTBEAT_SECONDS
+        output_stream = open(call.paths[1], "rb")
+        send(1, "initialize", {"clientInfo": {"name": "ora_agent_bridge", "version": "1"}})
+        def acknowledge(control, status, reason=""):
+            value = {**control, "status": status, "reason": reason}
+            record_input(value)
+            report({"event": "work_input", **value})
+
+        try:
+            while True:
+                fragment += output_stream.read()
+                lines = fragment.split(b"\n")
+                fragment = lines.pop()
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    event = json.loads(line)
+                    identifier, params = event.get("id"), event.get("params", {})
+                    result, error = event.get("result", {}), event.get("error")
+                    if identifier in pending:
+                        control = pending.pop(identifier)
+                        accepted = not error and result.get("turnId") == control["turn_id"]
+                        acknowledge(control, "accepted" if accepted else "refused",
+                                    error.get("message", "Codex refused the message.") if error else "" if accepted else "Codex did not acknowledge the expected turn.")
+                    elif identifier in (1, 2, 3) and error:
+                        raise BridgeError(Failure.PEER_FAILURE, detail=error.get("message", str(error)))
+                    elif identifier == 1:
+                        send(None, "initialized", {})
+                        options = {"cwd": command.cwd}
+                        if model is not None:
+                            options["model"] = model
+                        send(2, "thread/start", options)
+                    elif identifier == 2:
+                        thread = result["thread"]["id"]
+                        events.append({"type": "thread.started", "thread_id": thread})
+                        options = {"threadId": thread, "input": [{"type": "text", "text": body}] +
+                                   [{"type": "localImage", "path": path} for path in attachments]}
+                        # Match exec: ordinary approvals cannot prompt; configured
+                        # native auto-review keeps its own approval policy.
+                        if result.get("approvalsReviewer") != "auto_review":
+                            options["approvalPolicy"] = "never"
+                        if effort is not None:
+                            options["effort"] = effort
+                        policy = result.get("sandbox", {})
+                        if access_paths and policy.get("type") == "workspaceWrite":
+                            options["sandboxPolicy"] = {**policy, "writableRoots": list(dict.fromkeys(policy.get("writableRoots", []) + list(access_paths)))}
+                        send(3, "turn/start", options)
+                    elif identifier == 3:
+                        turn = result["turn"]["id"]
+                        report({"event": "work_input_ready", "thread_id": thread, "turn_id": turn})
+                    elif "method" in event and identifier is not None:
+                        # Like exec, this foreground route has no interactive approver.
+                        call._process.stdin.write((json.dumps({"id": identifier, "error": {"code": -32601, "message": "No interactive approval connection; use Codex in its terminal."}}) + "\n").encode("utf-8"))
+                        call._process.stdin.flush()
+                    elif params.get("threadId") == thread and params.get("turnId", params.get("turn", {}).get("id")) == turn:
+                        if event.get("method") == "item/completed" and params.get("item", {}).get("type") == "agentMessage":
+                            answer = params["item"].get("text")
+                        elif event.get("method") == "turn/completed":
+                            completed = True
+                            report({"event": "work_input_closed"})
+                            if params["turn"].get("status") != "completed":
+                                raise BridgeError(Failure.PEER_FAILURE, detail=str(params["turn"].get("error") or params["turn"]["status"]))
+                while True:
+                    try:
+                        control = controls.get_nowait()
+                    except queue.Empty:
+                        break
+                    if not isinstance(control, dict) or not isinstance(control.get("text"), str) or not control["text"].strip():
+                        raise BridgeError(Failure.USAGE_ERROR, detail="work input needs a nonempty text message")
+                    if completed or not turn or control.get("thread_id") != thread or control.get("turn_id") != turn:
+                        acknowledge(control, "refused", "The originating Codex turn is no longer active.")
+                        continue
+                    record_input({**control, "status": "pending"})
+                    pending[next_id] = control
+                    send(next_id, "turn/steer", {"threadId": thread, "expectedTurnId": turn,
+                                               "input": [{"type": "text", "text": control["text"]}]})
+                    next_id += 1
+                if call.elapsed() >= next_heartbeat:
+                    report({"event": "heartbeat", "phase": "peer-call", "elapsed_seconds": call.elapsed(), "child_running": call.running()})
+                    next_heartbeat = call.elapsed() + HEARTBEAT_SECONDS
+                if completed:
+                    for control in pending.values():
+                        acknowledge(control, "unknown", "Codex finished before delivery was acknowledged; inspect the retained turn before resending.")
+                    pending.clear()
+                    if not isinstance(answer, str) or not answer.strip():
+                        raise BridgeError(Failure.PEER_FAILURE, detail="Codex completed without a final agent message")
+                    events += [{"type": "item.completed", "item": {"type": "agent_message", "text": answer}}, {"type": "turn.completed"}]
+                    return CompletedCall(0, "\n".join(json.dumps(item) for item in events), "")
+                if call.wait(0.05):
+                    raise BridgeError(Failure.PEER_FAILURE, detail="Codex app-server ended before the turn completed: " + call.output()[1])
+        finally:
+            output_stream.close()
+            for control in pending.values():
+                acknowledge(control, "unknown", "The connection ended before Codex acknowledged delivery; inspect the retained turn before resending.")

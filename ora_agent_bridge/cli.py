@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import queue
+import threading
 import shutil
 import sys
 import tempfile
@@ -82,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
              "none refuses it before publication",
     )
     run.add_argument("--events-jsonl", action="store_true")
+    run.add_argument("--work-input-jsonl", action="store_true")
     run.add_argument("--work-permission", choices=("full-access",),
                      help="select ZCode Full access for this work call only; allows shell execution under your account")
     run.add_argument("--attachment", action="append")
@@ -279,9 +282,19 @@ def _run(args: argparse.Namespace) -> Tuple[int, Optional[str]]:
     event_writer = None
     if args.events_jsonl:
         event_writer = _write_stdout
+    work_input = None
+    if args.work_input_jsonl:
+        work_input = queue.Queue()
+        body = json.loads(sys.stdin.readline())["body"]
+        def read_input():
+            for line in sys.stdin:
+                work_input.put(json.loads(line))
+        threading.Thread(target=read_input, daemon=True).start()
+    else:
+        body = _read_body()
     result = runner.run_turn(
         session_dir=args.session,
-        body=_read_body(),
+        body=body,
         wait_seconds=args.timeout,
         no_timeout=args.no_timeout,
         warning_writer=lambda warning: sys.stderr.write(
@@ -296,6 +309,7 @@ def _run(args: argparse.Namespace) -> Tuple[int, Optional[str]]:
         note_ref=args.note_ref,
         purpose=args.purpose,
         event_writer=event_writer,
+        work_input=work_input,
     )
     if not isinstance(result, runner.PendingTurn):
         if args.events_jsonl:

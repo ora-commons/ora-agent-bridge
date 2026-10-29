@@ -537,6 +537,7 @@ def run_turn(
     build_work_command: Optional[WorkCommandBuilder] = None,
     no_timeout: bool = False,
     work_permission: Optional[str] = None,
+    work_input=None,
 ):
     """Publish one request and one response for the session's fixed target.
 
@@ -578,7 +579,7 @@ def run_turn(
         session_dir, body, wait, build_command, warning_writer, max_steps,
         required_model, model, effort, attachments, note_ref, purpose,
         event_writer, build_work_command,
-        work_permission,
+        work_permission, work_input,
     )
     try:
         outcome = generator.send(None)
@@ -603,9 +604,12 @@ def _turn(
     event_writer: Optional[EventWriter],
     build_work_command: Optional[WorkCommandBuilder],
     work_permission: Optional[str],
+    work_input,
 ):
     """One whole turn as a generator: a bounded wait suspends it mid-turn."""
     record = session_module.read_session(session_dir)
+    if work_input is not None and (record.peer != "codex" or record.mode != "work" or wait is not None or event_writer is None):
+        raise BridgeError(Failure.USAGE_ERROR, detail="work input requires an unbounded Codex work call with lifecycle events")
     connectors.validate_work_permission(record.peer, record.mode, work_permission)
     has_minimax_options = max_steps is not None or required_model is not None
     if has_minimax_options and record.peer != "minimax":
@@ -885,37 +889,46 @@ def _turn(
                 state["request_path"] = published_request
 
                 deadline.heartbeat = heartbeat("peer-call")
-                with start_call(
-                    argv=argv,
-                    cwd=command.cwd,
-                    env=command.env,
-                    stdin_text=stdin_text,
-                ) as call:
-                    state["call"] = call
-                    try:
-                        next_wait = (
-                            None
-                            if wait is None
-                            else max(
-                                0.0, wait - (time.monotonic() - turn_started)
+                if work_input is not None:
+                    from .record import _publish_note
+                    def record_input(value):
+                        _publish_note(session_dir, record, "Work-Input-JSON: " + json.dumps(value, ensure_ascii=True) + "\n")
+                    peer_call = connector.run_work_input(
+                        command, body, work_input, report, record_input,
+                        record.access_paths, declared_attachments, model, effort,
+                    )
+                else:
+                    with start_call(
+                        argv=argv,
+                        cwd=command.cwd,
+                        env=command.env,
+                        stdin_text=stdin_text,
+                    ) as call:
+                        state["call"] = call
+                        try:
+                            next_wait = (
+                                None
+                                if wait is None
+                                else max(
+                                    0.0, wait - (time.monotonic() - turn_started)
+                                )
                             )
-                        )
-                        while True:
-                            if call.wait(next_wait, heartbeat=deadline.heartbeat):
-                                break
-                            expiry = _evidence(
+                            while True:
+                                if call.wait(next_wait, heartbeat=deadline.heartbeat):
+                                    break
+                                expiry = _evidence(
+                                    session_dir, published_request, body, call
+                                )
+                                event = {"event": "wait_expired", "phase": "peer-call"}
+                                event.update(_evidence_fields(expiry))
+                                report(event)
+                                next_wait = yield state
+                            peer_call = call.outcome()
+                        except BaseException:
+                            state["failure_evidence"] = _evidence(
                                 session_dir, published_request, body, call
                             )
-                            event = {"event": "wait_expired", "phase": "peer-call"}
-                            event.update(_evidence_fields(expiry))
-                            report(event)
-                            next_wait = yield state
-                        peer_call = call.outcome()
-                    except BaseException:
-                        state["failure_evidence"] = _evidence(
-                            session_dir, published_request, body, call
-                        )
-                        raise
+                            raise
                 if peer_call.returncode != 0:
                     raise BridgeError(
                         Failure.PEER_FAILURE,

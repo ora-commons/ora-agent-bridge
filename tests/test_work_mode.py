@@ -48,6 +48,7 @@ import hashlib
 import io
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import signal
@@ -350,6 +351,56 @@ class WorkTurnBehavior(unittest.TestCase):
     def _run(self, body="Do the work.\n", **kwargs):
         kwargs.setdefault("build_work_command", self._builder("plain"))
         return runner.run_turn(self.session_dir, body, 30.0, **kwargs)
+
+    def test_codex_mid_turn_message_delivery(self):
+        import queue
+        controls, events = queue.Queue(), []
+        native = os.path.join(self.temp, "native-codex")
+        with open(native, "w") as stream:
+            stream.write("#!" + sys.executable + "\n" + r'''import json, sys
+accepted = False
+def emit(value):
+    print(json.dumps(value), flush=True)
+for line in sys.stdin:
+    event = json.loads(line)
+    identifier, method = event.get("id"), event["method"]
+    if method == "initialize":
+        emit({"id": identifier, "result": {}})
+    elif method == "thread/start":
+        emit({"id": identifier, "result": {"thread": {"id": "owned-thread"}, "sandbox": {"type": "workspaceWrite", "writableRoots": ["/configured"]}}})
+    elif method == "turn/start":
+        assert event["params"]["sandboxPolicy"]["writableRoots"][0] == "/configured"
+        emit({"id": identifier, "result": {"turn": {"id": "owned-turn"}}})
+    elif method == "turn/steer":
+        assert event["params"]["expectedTurnId"] == "owned-turn"
+        if not accepted:
+            accepted = True
+            emit({"id": identifier, "result": {"turnId": "owned-turn"}})
+        else:
+            emit({"id": identifier, "error": {"message": "active turn changed"}})
+            emit({"method": "item/completed", "params": {"threadId": "owned-thread", "turnId": "owned-turn", "item": {"type": "agentMessage", "text": "Correction received."}}})
+            emit({"method": "turn/completed", "params": {"threadId": "owned-thread", "turn": {"id": "owned-turn", "status": "completed"}}})
+''')
+        os.chmod(native, 0o755)
+        def report(line):
+            event = json.loads(line)
+            events.append(event)
+            if event["event"] == "work_input_ready":
+                for identifier, turn in (("accepted", "owned-turn"), ("stale", "later-turn"), ("race", "owned-turn")):
+                    controls.put({"id": identifier, "thread_id": "owned-thread", "turn_id": turn,
+                                  "text": "Exact correction \n" + identifier})
+        result = runner.run_turn(self.session_dir, "Start work.", work_input=controls,
+                                 event_writer=report, build_work_command=lambda deadline, cwd, **kwargs:
+                                 PeerCommand(argv=(native,), cwd=cwd, env=tuple(os.environ.items()),
+                                             response_parser=codex.parse_response))
+        outcomes = {event["id"]: event["status"] for event in events if event["event"] == "work_input"}
+        self.assertEqual(outcomes, {"accepted": "accepted", "stale": "refused", "race": "refused"})
+        saved = []
+        for path in sorted(Path(self.session_dir, "messages").glob("*-initiator-record.md")):
+            body = self._read(str(path)).split("## Body\n\n", 1)[1]
+            saved.append(json.loads(body.removeprefix("Work-Input-JSON: ").strip()))
+        self.assertEqual([value["text"] for value in saved if value["status"] == "accepted"], ["Exact correction \naccepted"])
+        self.assertIn("Correction received.", self._read(result.response_path))
 
     def test_the_work_round_trip_pairs_request_and_response_records(self):
         body = "Unicode caf\u00e9 \U0001f680 body.\n"

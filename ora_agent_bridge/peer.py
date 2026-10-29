@@ -1167,6 +1167,7 @@ def start_call(
     env: Iterable[Tuple[str, str]],
     stdin_text: str,
     spawn_failure: Failure = Failure.MISSING_CLI,
+    open_stdin: bool = False,
 ) -> Iterator[PeerCall]:
     """Start one peer program under this module's ownership, without a deadline.
 
@@ -1201,7 +1202,7 @@ def start_call(
                 except OSError as exc:
                     raise BridgeError(spawn_failure, detail=str(exc))
                 spawn = {
-                    "stdin": handles[0],
+                    "stdin": subprocess.PIPE if open_stdin else handles[0],
                     "stdout": handles[1],
                     "stderr": handles[2],
                     "shell": False,
