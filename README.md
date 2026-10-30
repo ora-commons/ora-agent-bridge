@@ -37,7 +37,14 @@ Bridge owns a deliberately small surface and does it reliably:
     the tool's own normal permissions, with a project directory for
     project-capable tools, optional additional access directories, optional
     image attachments, machine-readable readiness JSON, and lifecycle events
-    (`--events-jsonl`) for applications that watch a turn live.
+    (`--events-jsonl`) for applications that watch a turn live. One further
+    Codex-only extension, `--work-input-jsonl`, lets an application send
+  follow-up messages while that work turn is still running. A message
+  naming the active turn's `thread_id` and `turn_id` steers that one
+  turn; a stale or mismatched message is refused locally before anything
+  is sent. Each message is reported `accepted`, `refused`, or `unknown`;
+  `accepted` means Codex acknowledged the steering, without proof it
+  complied. No other target takes live input.
 - A limited identity report: where the target's own structured output names
   the model that answered (MiniMax Code with `--require-model`), Bridge
   preserves that tool-reported identity in the finished event and the
@@ -153,18 +160,18 @@ and no `ora-agent-bridge` console command; the checkout is the installation:
 ```sh
 git clone https://github.com/ora-commons/ora-agent-bridge.git
 cd ora-agent-bridge
-git checkout v1.6.0
+git checkout v1.6.1
 ```
 
-`v1.6.0` is this release's tag. Run every Bridge command from the absolute
+`v1.6.1` is this release's tag. Run every Bridge command from the absolute
 checkout root with `python3 -m ora_agent_bridge ...`. These instructions need no
 private repository and no personal settings.
 
 ## Identify your version
 
-Open `ora_agent_bridge/__init__.py` in the checkout. The `VERSION = "1.6.0"` line
+Open `ora_agent_bridge/__init__.py` in the checkout. The `VERSION = "1.6.1"` line
 names the release you have. For a clean release checkout, the Git tag you
-selected (`git checkout v1.6.0` above) and that line agree. There is no
+selected (`git checkout v1.6.1` above) and that line agree. There is no
 `--version` command.
 
 ## A complete work-mode walkthrough
