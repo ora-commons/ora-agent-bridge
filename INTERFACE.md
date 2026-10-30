@@ -106,6 +106,7 @@ python3 -m ora_agent_bridge run --session <session-directory>
                  [--require-model <provider/model>]
                  [--model <name>] [--effort <level>]
                  [--events-jsonl]
+                 [--work-input-jsonl]
                  [--work-permission full-access]
                  [--attachment <absolute-image-path>]...
                  [--note-ref <id>] [--purpose <label>]
@@ -137,7 +138,7 @@ It runs in a task-owned neutral directory and never touches a real project, inst
 `--json` replaces the prose with exactly one JSON object on standard output, one line, no schema version. Success and failure alike produce one object; a failure still exits nonzero.
 
 ```json
-{"peer": "codex", "mode": "work", "bridge_version": "1.6.0", "ready": true,
+{"peer": "codex", "mode": "work", "bridge_version": "1.6.1", "ready": true,
  "command_present": true,
  "executable": "/usr/local/bin/codex", "version": "0.155.1",
  "platform": "Darwin 26 arm64",
@@ -165,7 +166,7 @@ It runs in a task-owned neutral directory and never touches a real project, inst
 
 ### `run`
 
-`run` reads the session's initiator, target, and optional project, then reads one nonempty Markdown body from standard input. It resolves only that target, repeats cheap prerequisites, validates transport, and determines current warnings. It writes any `Warning:` lines to standard error immediately before publishing the request, then starts exactly one target CLI invocation, captures its final text, and atomically publishes the response.
+`run` reads the session's initiator, target, and optional project, then reads one nonempty Markdown body from standard input (`--work-input-jsonl` instead reads the body from one leading JSON line, with live-input lines after it — section 4a). It resolves only that target, repeats cheap prerequisites, validates transport, and determines current warnings. It writes any `Warning:` lines to standard error immediately before publishing the request, then starts exactly one target CLI invocation, captures its final text, and atomically publishes the response.
 
 Warnings never prompt, wait for acknowledgment, read an approval flag, or persist consent. A readable version outside exercised evidence may proceed with a warning when every required switch and the fixed one-shot transport remain usable.
 
@@ -245,7 +246,7 @@ Each call still starts a fresh native context. A successful work call returns th
 
 ### `run --events-jsonl`
 
-With `--events-jsonl`, standard output carries one JSON object per line — lifecycle events, periodic check-ins, and exactly one final result — and nothing else; the response path arrives inside the final event. Every event line, like the response-path line a flag-free run prints, is flushed to standard output the moment it is written, so a consumer reading a pipe sees it during the turn rather than at exit. Standard error remains diagnostics, warnings included. Every event object has an `event` field (`started`, `heartbeat`, `wait_expired`, or `finished`) and a `phase` field.
+With `--events-jsonl`, standard output carries one JSON object per line — lifecycle events, periodic check-ins, and exactly one final result — and nothing else; the response path arrives inside the final event. Every event line, like the response-path line a flag-free run prints, is flushed to standard output the moment it is written, so a consumer reading a pipe sees it during the turn rather than at exit. Standard error remains diagnostics, warnings included. Every event object has an `event` field (`started`, `heartbeat`, `wait_expired`, or `finished`) and a `phase` field; the live-input events of a `--work-input-jsonl` turn — `work_input_ready`, `work_input`, and `work_input_closed` (section 4a) — carry no `phase`, because they exist only inside the one peer call.
 
 ```json
 {"event": "started", "phase": "run", "peer": "codex", "mode": "work"}
@@ -260,6 +261,20 @@ With `--events-jsonl`, standard output carries one JSON object per line — life
 A heartbeat means Bridge is alive and can report whether its child process is still running; it is not progress and carries no percentages. Heartbeats arrive while prerequisite probes or the peer call are waiting (`phase` says which), about every 30 seconds; ordinary waiting has no deadline. The final `finished` event carries `outcome` (`success`, `failure`, `stopped`, or `pending` — the last when a bounded wait returned control with the target still running), `request_path` and `response_path` when published, the warnings, and — for `failure` — a plain `reason` and `next_action`; internal exception names stay internal. Each time a bounded wait ends with the target still running, a `wait_expired` event (`phase` `peer-call`) is emitted, and the `pending` `finished` event carries the same retained evidence fields: `session_dir`, `request_on_disk`, `peer_pid`, and `peer_running`, with `peer_session`, `stdout_progress`, `stderr_progress`, `elapsed_seconds` (measured from the peer call's start), and `capture_paths` (the retained capture files) present when there is something to report. A `success` event may additionally carry `model` and `provider` when the target's own structured output reported the identity that answered — MiniMax's `--require-model` JSON mode and Codex's session-file reading are the two such routes today — and both fields are absent when it did not, never empty strings; they state what the tool reported, never a Bridge selection. For Codex the model is what its own session file recorded for the call, or the plain words `not reported` when it could not be read. A `success` event follows durable response publication. A failed call still exits nonzero. If the event pipe breaks, the turn runs on and its records decide the truth: a broken pipe can never turn an unfinished call into a reported success.
 
 Stop signals, `--timeout` or `--no-timeout`, interruption, and cleanup behave exactly as for any other run; there is no separate cancellation daemon or command service.
+
+### `run --work-input-jsonl`
+
+`--work-input-jsonl` adds live input to one Codex work turn: while the turn the call started is still running, the application sends further messages, and Codex steers that same turn with them. The call is still one foreground run with one request and one response; a live message never queues or starts a second turn, and none outlives the turn it addresses.
+
+The option is refused before request publication with the usage error `work input requires an unbounded Codex work call with lifecycle events` unless the session is a Format 3 work session whose target is `codex`, `--events-jsonl` is on, and no `--timeout` is named. No other target implements live input.
+
+Standard input becomes a JSON-line protocol in place of the bare body. The first line is one JSON object whose `body` string is the request body, recorded and published like any other. Each later line is one JSON object — one live message — carrying a nonempty `text` string and the `thread_id` and `turn_id` of the active turn; further keys are recorded unchanged. A message without a nonempty `text` fails the run as a usage error.
+
+Instead of `codex exec`, Bridge starts `codex app-server`, opens one thread in the session's working directory, and starts exactly one turn carrying the body and any `--attachment` images, after the same work prerequisites and warnings as the exec route. A caller-named `--model` passes to the thread and `--effort` to the turn; approvals behave as on exec — the turn requests none itself unless Codex's server reports its own native auto-review, and a server-initiated approval request is declined, because this foreground route has no interactive approver — and declared access paths join the writable roots when the resolved policy is workspace-write, the app-server counterpart of `--add-dir`.
+
+Once the turn exists, one `work_input_ready` event carries its `thread_id` and `turn_id`; the application takes its messages' addressing from that event. Each eligible message — one whose `thread_id` and `turn_id` still name the active turn — travels as a native `turn/steer` for exactly that turn and is echoed by one `work_input` event with its status: `accepted` (Codex acknowledged steering that turn; a native acknowledgment is not proof of compliance), `refused` (a stale or mismatched message Bridge refused locally before sending anything, or Codex answered an error or a different turn), or `unknown` (the turn finished or the connection ended before acknowledgment — inspect the retained turn before resending; Bridge never resends). `work_input_closed` reports the turn's completion; heartbeats, the final `finished` event, stopping, and cleanup behave as for any other run.
+
+Every live message is retained in order as a numbered initiator record in the note shape of section 7, its body one `Work-Input-JSON:` line: the message as sent plus `status` — `pending` when sent, then the final `accepted`, `refused`, or `unknown` — and the `reason` when there is one. The turn's final agent message is published as the response of the same run and parsed like any Codex answer, so the choices report of section 4 applies unchanged, `not reported` included. A turn that ends uncompleted, a turn that completes without a final agent message, and an app-server that ends early are peer failures carrying Codex's own reason; there is no retry.
 
 ---
 
@@ -419,6 +434,20 @@ From: ora
 <note copied unchanged>
 ```
 
+Each live message of a `--work-input-jsonl` turn (section 4a) is retained in the same note shape, its body one `Work-Input-JSON:` line:
+
+```markdown
+# Message 0003
+Record: note
+From: vibe-coder
+
+## Body
+
+Work-Input-JSON: {"id": "correction-1", "thread_id": "<active thread>", "turn_id": "<active turn>", "text": "Use the fixture path instead.", "status": "accepted", "reason": ""}
+```
+
+The line is the message exactly as sent plus the delivery `status` (`pending` when sent, then the final `accepted`, `refused`, or `unknown`) and the `reason` when there is one, written with ASCII escapes; nothing in it is interpreted.
+
 Header-shaped text below `## Body` remains body text. It cannot change Bridge identity, target, project, mode, number, kind, restrictions, authority, routing, or become a Bridge command. Bridge extracts no plan, commit, approval, review result, or instruction.
 
 Filenames describe direction rather than repeating caller labels. A response is the next message published while the same run holds the lock; in Format 3 its `Answers:` header is the correlation, read from the record itself.
@@ -430,6 +459,7 @@ A caller may read everything it needs from the retained records alone, in plain 
 - From `SESSION.md`: the session's working `Mode:` and every declared `Access-Path:` directory, beside the immutable initiator, target, and project.
 - From each request file: its sequence in the title line, its exact body below `## Body` (byte-exact, never modified), and its `Note-Ref:`, `Purpose:`, and `Attachment:` header lines when the caller supplied them.
 - From each response file: its path, its body below `## Body`, the request sequence it `Answers:`, the `Model:` and `Provider:` lines the tool's own output reported for that call, when it reported an identity at all, and — for Codex — the `Effort:` and `Requested-Model:`/`Requested-Effort:` lines of its choices report, which rides in the reply of either session format.
+- From each `Work-Input-JSON:` record of a live-input turn: the message as sent and its delivery status (section 4a).
 
 Headers are always the block between the title line and the first blank line; everything below `## Body` is inert text. Bridge owns this surface and will keep it readable.
 
