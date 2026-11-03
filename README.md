@@ -39,21 +39,15 @@ Bridge owns a deliberately small surface and does it reliably:
     image attachments, machine-readable readiness JSON, and lifecycle events
     (`--events-jsonl`) for applications that watch a turn live. One further
     Codex-only extension, `--work-input-jsonl`, lets an application send
-  follow-up messages while that work turn is still running. A message
-  naming the active turn's `thread_id` and `turn_id` steers that one
-  turn; a stale or mismatched message is refused locally before anything
-  is sent. Each message is reported `accepted`, `refused`, or `unknown`;
-  `accepted` means Codex acknowledged the steering, without proof it
-  complied. No other target takes live input.
+    follow-up messages while that work turn is still running; each message
+    is reported `accepted`, `refused`, or `unknown`.
 - A limited identity report: where the target's own structured output names
   the model that answered (MiniMax Code with `--require-model`), Bridge
   preserves that tool-reported identity in the finished event and the
   response record. For Codex, Bridge also reads the model and effort Codex
-  itself recorded for the call from Codex's own session file and reports
-  them in the response record beside the values the caller requested,
-  saying `not reported` when the file or the values cannot be read; they
-  are never inferred from the request. Bridge never selects or changes a
-  model itself.
+  itself recorded for the call and reports them beside the values the
+  caller requested, saying `not reported` when they cannot be read. Bridge
+  never selects or changes a model itself.
 
 The six target identifiers are literal: `codex`, `claude`, `zcode`,
 `hermes`, `minimax`, and `qwen`. Only the selected connector is imported or
@@ -160,19 +154,18 @@ and no `ora-agent-bridge` console command; the checkout is the installation:
 ```sh
 git clone https://github.com/ora-commons/ora-agent-bridge.git
 cd ora-agent-bridge
-git checkout v1.6.1
+git checkout v1.7.0
 ```
 
-`v1.6.1` is this release's tag. Run every Bridge command from the absolute
+`v1.7.0` is this release's tag. Run every Bridge command from the absolute
 checkout root with `python3 -m ora_agent_bridge ...`. These instructions need no
 private repository and no personal settings.
 
 ## Identify your version
 
-Open `ora_agent_bridge/__init__.py` in the checkout. The `VERSION = "1.6.1"` line
+Open `ora_agent_bridge/__init__.py` in the checkout. The `VERSION = "1.7.0"` line
 names the release you have. For a clean release checkout, the Git tag you
-selected (`git checkout v1.6.1` above) and that line agree. There is no
-`--version` command.
+selected and that line agree. There is no `--version` command.
 
 ## A complete work-mode walkthrough
 
@@ -262,14 +255,12 @@ requested line: Bridge work mode says hello.
 The session folder holds `SESSION.md` (the immutable binding), a numbered
 request and response under `messages/`, and the lock used during the turn.
 A work call runs under the tool's ordinary capabilities and its own normal
-permissions. For ZCode, work defaults to Edit; an explicit
-`--work-permission full-access` on `run` selects native Full access
-(`--mode yolo`) for that turn only, allowing shell commands for approved
-Git work and tests under your account. The same option on
-`check --peer zcode --mode work --json` checks that exact launch mode and
-reports `effective_permission`, `headless_shell`, and
-`shell_execution_verified: false`: it runs no model turn, Git command, or test.
-The option is refused for other tools and review calls and changes no global setting. If the tool cannot complete the call, the request remains as an
+permissions. For ZCode, work defaults to Edit; `--work-permission
+full-access` on one `run` (or the same option on the ZCode work check)
+selects native Full access for that call only, allowing shell commands for
+approved Git work and tests under your account. It is allowed for ZCode
+work calls alone and changes no global setting; INTERFACE.md has the exact
+facts. If the tool cannot complete the call, the request remains as an
 honest record, no response is invented, and the failure names the reason
 and one next action.
 
@@ -321,26 +312,22 @@ error. Any failure exits nonzero with a reason and one next action on
 standard error — show all of it, not just the last line. Surface every
 warning without asking for acknowledgment.
 
-`run` has no deadline for ordinary work: it waits until the peer answers, the
-peer fails, or the caller stops the run. Readiness checks keep a bounded
-deadline of their own. `--timeout <seconds>` names a bounded wait instead of a
-kill: when the wait ends, the command returns control, leaves the peer running,
-and reports the retained evidence — the session and published request, the
-peer's process and any session reference it printed, and sanitized partial
-output. On Windows a retained or detached target ends when the owning Bridge
-process exits; macOS and Linux are unaffected. The explicit `--no-timeout`
-option is the default behavior and cannot
-be combined with `--timeout`. Keep the caller attached until the answer or stop
-and cleanup. A target failure
-after publication leaves the truthful request and invents no response. Do
-not turn an uncertain publication into success or automatically retry it.
+`run` has no deadline for ordinary work: it waits until the peer answers,
+the peer fails, or the caller stops the run; readiness checks keep a
+bounded deadline of their own. `--timeout <seconds>` names a bounded wait
+that returns control without stopping the peer and reports the retained
+evidence; `--no-timeout` names the default behavior and cannot be combined
+with `--timeout`. Keep the caller attached until the answer or stop and
+cleanup. A target failure after publication leaves the truthful request
+and invents no response: one failure message says the message may not have
+arrived at its recorded name and to look for the file before running
+again. [INTERFACE.md](INTERFACE.md) details the retained evidence and the
+Windows behavior of a retained target.
 
-Only a session targeting MiniMax may add `--max-steps <positive-integer>`
-or `--require-model <provider/model>` to `run`. The second makes Bridge
-require a byte-exact runtime provider/model identity in MiniMax's JSON
-result and then publish that tool-reported identity beside the answer (the
-`Model:` and `Provider:` lines described above). Either option is refused
-for every other target before request publication.
+`--max-steps <positive-integer>` and `--require-model <provider/model>`
+are run options only a session targeting MiniMax may add; either is
+refused for every other target before request publication.
+[INTERFACE.md](INTERFACE.md) details what each does.
 
 ## Calling Bridge from an application
 
@@ -381,28 +368,19 @@ synchronized: updating the checkout does not update an installed copy, and
 Bridge never writes into a skills folder. A coding tool used only as a
 target needs no skill at all.
 
-## Update
+## Update and remove
 
-Let every Bridge command using the checkout exit first, then from the
-checkout root:
+Let every Bridge command using the checkout exit first. To update, from the
+checkout root: `git fetch --tags`, then `git checkout <new-tag>` (use the
+actual latest tag from the repository's tags or releases). Repeat `check`
+for your target before the next call, and replace any copied skill by hand
+from the same revision. Do not use Git commands to overwrite local edits
+you want to keep.
 
-```sh
-git fetch --tags
-git checkout v1.1.1   # the release you are moving to
-```
-
-(Use the actual new tag; check the repository's tags or releases for the
-latest.) Repeat `check` for your target before the next call. If you
-copied a skill, replace the installed copy by hand from the same revision;
-Bridge does not synchronize installed copies. Do not use Git commands to
-overwrite local edits you want to keep.
-
-## Remove
-
-Let every Bridge command using the checkout exit, then delete the checkout
-folder and any skill folders you copied from it. Removing Bridge does not
-remove a vendor CLI, sign out of a vendor account, change vendor
-configuration, or delete session directories elsewhere. Keep or remove
+To remove Bridge, let every command exit, then delete the checkout folder
+and any skill folders you copied from it. Removing Bridge does not remove a
+vendor CLI, sign out of a vendor account, change vendor configuration, or
+delete session directories elsewhere. Keep or remove
 `~/.agent-bridge/sessions` separately according to whether its
 human-readable records are still needed.
 
@@ -419,13 +397,11 @@ describe that vendor's design, not a Bridge defect.
 ## Corrections and withdrawals
 
 If a release is corrected, the correction ships as a new version with a
-new tag (for example v1.1.1) and release notes that say what changed; the
-current README always describes the current release. A withdrawn release
-is withdrawn from the releases page, but earlier versions remain reachable
-at their existing Git tags, and every published release notes its
-exercised platforms and tools. Check
-https://github.com/ora-commons/ora-agent-bridge/releases before installing to
-see the current version and any correction notes.
+new tag and release notes that say what changed; the current README always
+describes the current release. A withdrawn release is withdrawn from the
+releases page, but earlier versions remain reachable at their existing Git
+tags. Check https://github.com/ora-commons/ora-agent-bridge/releases before
+installing to see the current version and any correction notes.
 
 ## Safety and warnings
 
@@ -438,30 +414,25 @@ suppresses repository instructions nor deletes or hides those logs.
 Review calls use each connector's strongest practical vendor safeguards
 and warn about the remaining limits; work calls use the tool's ordinary
 capabilities under its own normal permissions, keep every warning that
-still applies, and add the ones that matter to work. ZCode Full access requires the explicit per-call option described above;
-ordinary ZCode work keeps Edit and review keeps Plan. Other tools retain
-their normal permissions — for Codex Bridge reports the apparent
-posture read from the top of the user's config in a warning and lets
-codex's own run-time enforcement govern. Warnings do not block a usable
-call, require approval, or store consent.
+still applies, and add the ones that matter to work. Warnings state fixed
+limits rather than per-call lookups: they are not re-derived from your
+configuration on every call. ZCode Full access requires the explicit
+per-call option described above; ordinary ZCode work keeps Edit and review
+keeps Plan. Warnings do not block a usable call, require approval, or
+store consent.
 
 Transport facts worth knowing: ZCode and Hermes receive the entire body as
 one bound command-line option, visible to other same-user processes and
 potentially to system and vendor logs; NUL and oversize bodies are refused
-before publication. The other four connectors use standard input. Qwen
+before publication, and the other four connectors use standard input. Qwen
 Code 0.23.0 alone may preprocess recognized leading `/` commands or
-unescaped `@` references before the model (altering the effective prompt,
-appending readable file content, failing, or handling a command itself);
-its zero model-tool-call limit does not stop that preprocessing, and no
-raw switch exists. Bridge records and passes the original body unchanged
-and warns; never claim Qwen's model saw it unchanged. For Qwen, safe mode
-still loads settings and `.env` values that can bypass its sandbox or
-start a detached proxy shell; Bridge names those surviving routes as
-warnings. Claude Code's exact managed MCP source is incompatible with its
-strict-MCP review invocation and fails as a prerequisite, not a warning.
+unescaped `@` references before the model, and its zero model-tool-call
+limit does not stop that preprocessing. Bridge records and passes the
+original body unchanged and warns; never claim Qwen's model saw it
+unchanged. INTERFACE.md names Qwen's other surviving routes.
 
 [INTERFACE.md](INTERFACE.md) details every connector's limits, the
-per-target work and image routes, and the release criteria.
+per-target work and image routes, and the checks.
 
 ## License
 

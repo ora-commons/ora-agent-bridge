@@ -1,12 +1,13 @@
 """The hand-written MiniMax Code courier connector.
 
 MiniMax Code 0.2.7 has a stable headless ``mcode exec`` transport, but no
-headless permission mode that confines its tools. Ora Agent Bridge therefore gives
-its review calls only a task-owned neutral directory and reports the remaining
-tool and configuration authority instead of presenting ``smart`` as a sandbox.
-Work calls use the same ``exec`` under the program's own ordinary defaults and
-with no permission policy selected by Bridge: the workspace comes from
-``--cwd``, and the review-only one-step bound is not imposed.
+headless permission mode that confines its tools. Ora Agent Bridge therefore
+gives its review calls only a task-owned neutral directory and reports the
+remaining tool and configuration authority instead of presenting ``smart``
+as a sandbox. Work calls use the same ``exec`` under the program's own
+ordinary defaults and with no permission policy selected by Bridge: the
+workspace comes from ``--cwd``, and the review-only one-step bound is not
+imposed.
 
 SPDX-License-Identifier: CC0-1.0
 """
@@ -14,7 +15,6 @@ SPDX-License-Identifier: CC0-1.0
 from __future__ import annotations
 
 import json
-import math
 from typing import List, Optional, Sequence, Tuple
 
 from . import connectors
@@ -22,7 +22,6 @@ from .errors import BridgeError, Failure
 from .peer import Deadline
 
 HARNESS_ID = "minimax"
-COURIER_ONLY = True
 
 QUALIFICATION = connectors.Qualification(
     cli_identity="mcode",
@@ -35,7 +34,6 @@ QUALIFICATION = connectors.Qualification(
         "--input-format",
         "--cwd",
         "--permission",
-        "--timeout",
         "--max-steps",
         "--output-format",
     ),
@@ -43,13 +41,11 @@ QUALIFICATION = connectors.Qualification(
 
 #: What this connector offers beyond its restricted review call. Work is the
 #: ordinary `mcode exec` invocation with no permission policy of Bridge's
-#: choosing: the program's own headless default governs (read from its source,
-#: an absent `--permission` is fixed at `smart`, and no runtime configuration
-#: can change the permission mode of a headless run), `ask` needs an
-#: interactive host and is rejected by `mcode exec` itself, while `full` and
-#: `off` are approval bypasses Bridge never selects. Images have a native
-#: attachment switch; mcode's source turns image MIME types into model image
-#: content.
+#: choosing: mcode's source fixes an absent `--permission` at `smart`, and
+#: no runtime configuration can change the permission mode of a headless
+#: run; `ask` needs a TUI and is rejected by `mcode exec` itself, while
+#: `full` and `off` are approval bypasses Bridge never selects. Images have
+#: a native `--file` attachment switch.
 CAPABILITIES = connectors.Capabilities(
     work="supported",
     work_detail=(
@@ -68,21 +64,15 @@ CAPABILITIES = connectors.Capabilities(
     ),
 )
 
-#: The switch a caller-named model choice travels on. MiniMax Code
-#: documents `--model <provider/model>` to override the model for one run;
-#: it documents no effort switch, so a named effort is refused.
+#: The switch a caller-named model choice travels on. MiniMax Code documents
+#: `--model <provider/model>` for one run; it documents no effort switch.
 CHOICE_SWITCHES = connectors.ChoiceSwitches(model="--model")
 
 #: The switches a work turn relies on, verified against the installed
-#: program's own help before any request is published. The `exec` subcommand
-#: itself is proved by the help probe that carries these switches: a program
-#: without it would not answer `mcode exec --help`. The review-only
-#: `--permission` switch is not a work prerequisite - the work vector passes
-#: no permission policy at all - and the three optional switches are required
-#: only when the work vector actually emits them, as `--model` is when the
-#: caller names one.
+#: program's own help before any request is published. The review-only
+#: `--permission` switch is not a work prerequisite, and the optional
+#: switches are required only when the work vector actually emits them.
 WORK_RESTRICTIONS = ("--input", "--input-format", "--cwd", "--output-format")
-WORK_TIMEOUT_RESTRICTION = ("--timeout",)
 WORK_ATTACHMENT_RESTRICTIONS = ("--file",)
 WORK_STEPS_RESTRICTIONS = ("--max-steps",)
 WORK_MODEL_RESTRICTIONS = ("--model",)
@@ -117,9 +107,6 @@ WARNING = (
     "configuration."
 )
 
-MAX_NATIVE_TIMEOUT_MILLISECONDS = 2_147_483_647
-
-
 def _invalid_result(detail: str) -> BridgeError:
     return BridgeError(Failure.PEER_FAILURE, detail=detail)
 
@@ -151,13 +138,11 @@ def validate_run_options(
 def parse_response(output: str, required_model: str) -> str:
     """Final text, carrying the reported identity, after strict validation.
 
-    The validation is unchanged: a schema-version-1 successful `exec.result`
-    whose `providerId/modelId` is byte-for-byte the required model. The
+    A schema-version-1 successful `exec.result` whose `providerId/modelId`
+    is byte-for-byte the required model. The
     return is that validated identity's own final output text, returned as
-    `AttributedText` so the provider and model MiniMax itself reported -
-    the exact pair just validated - travel with the answer instead of being
-    discarded. To every reader that compares, publishes, or parses it, the
-    value is the plain final output string.
+    `AttributedText` so the provider and model MiniMax itself reported
+    travel with the answer instead of being discarded.
     """
     try:
         result = json.loads(output)
@@ -201,15 +186,10 @@ def _prerequisites(
     """Readiness facts and the switches the selected mode's vector relies on.
 
     A review turn proves the review vector's whole switch set, `--permission`
-    included, because that vector passes them all. A work turn proves only
-    what the work vector passes: the standard-input, format, and
-    working-directory switches always; `--timeout` when the deadline is one
-    the vector can hand to the program; `--file` when an attachment travels;
-    `--max-steps` when the caller names a bound; and `--model` when the caller
-    names a model. The review-only switches are not work prerequisites,
-    because a work call passes none of them. Authentication stays honestly
-    unconfirmed in both modes: MiniMax has no state-free noninteractive
-    authentication check, and none is invented here.
+    included; a work turn proves only what the work vector passes.
+    Authentication stays honestly unconfirmed in both modes: MiniMax has no
+    state-free noninteractive authentication check, and none is invented
+    here.
     """
     warnings = []  # type: List[str]
     program = connectors.executable(QUALIFICATION.cli_identity)
@@ -222,8 +202,6 @@ def _prerequisites(
     help_call = connectors.probe((program, "exec", "--help"), cwd, deadline)
     if work:
         switches = WORK_RESTRICTIONS
-        if deadline.work_seconds <= MAX_NATIVE_TIMEOUT_MILLISECONDS / 1000.0:
-            switches += WORK_TIMEOUT_RESTRICTION
         if attachments:
             switches += WORK_ATTACHMENT_RESTRICTIONS
         if max_steps is not None:
@@ -231,15 +209,7 @@ def _prerequisites(
         if model is not None:
             switches += WORK_MODEL_RESTRICTIONS
         connectors.qualified_restrictions(
-            help_call,
-            connectors.Qualification(
-                cli_identity=QUALIFICATION.cli_identity,
-                versions=QUALIFICATION.versions,
-                os_family=QUALIFICATION.os_family,
-                os_major_versions=QUALIFICATION.os_major_versions,
-                architectures=QUALIFICATION.architectures,
-                restrictions=switches,
-            ),
+            help_call, QUALIFICATION._replace(restrictions=switches)
         )
         warnings.append(WORK_WARNING)
     else:
@@ -290,25 +260,8 @@ def build_command(
     required_model: Optional[str] = None,
     model: Optional[str] = None,
 ) -> connectors.PeerCommand:
-    validate_run_options(max_steps, required_model)
     program, _version, _described, _account, warnings = _prerequisites(
         deadline, cwd, model=model
-    )
-    # MiniMax starts this timer after this process starts. It is keyed to the
-    # work bound, never the readiness bound: an ordinary turn - whose work has
-    # no deadline - passes no native kill at all, and a bounded vector's
-    # duration is rounded up so the native timer cannot win; above Node's
-    # timer domain it is omitted.
-    native_timeout = (
-        (
-            "--timeout",
-            "{0}ms".format(
-                max(1, int(math.ceil(deadline.work_seconds * 1000.0)))
-            ),
-        )
-        if deadline.work_seconds
-        <= MAX_NATIVE_TIMEOUT_MILLISECONDS / 1000.0
-        else ()
     )
     return connectors.PeerCommand(
         argv=(
@@ -323,7 +276,6 @@ def build_command(
             "--permission",
             "smart",
         )
-        + native_timeout
         + (
             ("--model", model) if model is not None else ()
         )
@@ -356,44 +308,21 @@ def build_work_command(
 ) -> connectors.PeerCommand:
     """The ordinary `mcode exec` work invocation, review-only bounds removed.
 
-    The workspace is the session's working directory, named by `--cwd` as the
-    program itself expects. No permission policy is selected: the vector
-    passes no `--permission`, so the effective policy is mcode exec's own,
-    which its source fixes at `smart` when the switch is absent - the same
-    posture an ordinary headless `mcode exec` runs under, with no runtime
-    configuration able to change the permission mode of a headless run.
-    `ask` cannot run headless and is rejected by `mcode exec` itself with
-    the TUI or ACP named as its route, and `full` and `off` are approval
-    bypasses Bridge never selects, so there is no configured posture this
-    vector could be silently replacing. The review call's one-assistant-step
-    bound is not imposed: `--max-steps` is passed only when the caller names
-    a bound, and otherwise MiniMax's own default governs the run; Bridge sets
-    no deadline of its own. Each attachment becomes one `--file`, which mcode
-    hands to the model as image content. Declared access directories are
-    recorded in the session and stay reachable as ordinary same-user paths;
-    mcode has no per-call switch that widens its workspace.
-
-    A caller-named model passes through on MiniMax's own documented
-    `--model` switch, exactly as named, and no substitution is made for one
-    the account rejects at use. MiniMax Code documents no effort switch, so
-    the runner refuses a named effort before this builder is reached; the
-    parameter is accepted and never used.
+    The workspace is the session's working directory, named by `--cwd`. No
+    permission policy is selected: the effective policy is mcode exec's own,
+    which its source fixes at `smart` when the switch is absent, with no
+    runtime configuration able to change the permission mode of a headless
+    run. The review call's one-assistant-step bound is not imposed:
+    `--max-steps` is passed only when the caller names a bound. Each
+    attachment becomes one `--file`. Declared access directories stay
+    reachable as ordinary same-user paths; mcode has no per-call switch that
+    widens its workspace. A caller-named model passes through on MiniMax's
+    own documented `--model` switch, exactly as named; MiniMax Code
+    documents no effort switch, so the parameter is accepted and never used.
     """
-    validate_run_options(max_steps, required_model)
     program, _version, _described, _account, warnings = _prerequisites(
         deadline, cwd, work=True, attachments=attachments,
         max_steps=max_steps, model=model,
-    )
-    native_timeout = (
-        (
-            "--timeout",
-            "{0}ms".format(
-                max(1, int(math.ceil(deadline.work_seconds * 1000.0)))
-            ),
-        )
-        if deadline.work_seconds
-        <= MAX_NATIVE_TIMEOUT_MILLISECONDS / 1000.0
-        else ()
     )
     argv = [
         program,
@@ -405,7 +334,6 @@ def build_work_command(
         "--cwd",
         cwd,
     ]
-    argv.extend(native_timeout)
     for attachment in attachments:
         argv.extend(("--file", attachment))
     if model is not None:

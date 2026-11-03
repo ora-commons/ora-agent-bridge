@@ -1,8 +1,8 @@
 """Create one courier session or add one neutral note without calling a target.
 
-This is the only local writer besides the runner. Both record kinds use the
+This is the only local writer besides the runner; both record kinds use the
 same validation, session lock, sequence allocation, envelopes, and atomic
-publication as a target call. The Markdown body remains inert application text.
+publication as a target call.
 
 SPDX-License-Identifier: CC0-1.0
 """
@@ -18,10 +18,6 @@ from .errors import BridgeError, Failure
 from .locking import session_lock
 
 RECORD_KINDS = ("session-create", "note")
-
-#: The working modes a session may be explicitly created in. Omitting the
-#: mode entirely keeps the original Format 2 session and its behavior.
-SESSION_MODES = session_module.MODES
 
 
 def _require(value: Optional[str], what: str) -> str:
@@ -62,10 +58,6 @@ def _directory_path(option: str, path: Optional[str]) -> Optional[str]:
     return path
 
 
-def _project_path(project: Optional[str]) -> Optional[str]:
-    return _directory_path("--project", project)
-
-
 def _access_paths(paths: Optional[Sequence[str]]) -> Tuple[str, ...]:
     """Validate every declared access directory, refusing repeats."""
     if paths is None:
@@ -93,25 +85,18 @@ def _create_session(
 ) -> str:
     """Write the immutable session record and allocate no number.
 
-    Without `mode` this is the Format 2 session exactly as before. A named
-    mode writes Format 3, records the working mode immutably, and may record
-    additional access directories; a work session may be created without a
-    project directory, because a project can begin before any code exists.
+    Without `mode` this is the Format 2 session exactly as before; a named
+    mode writes Format 3 and may record access directories and no project.
     """
     initiator_label = session_module.validate_initiator(
         _require(initiator, "--initiator")
     )
     peer_id = _require_peer(peer)
-    project_directory = _project_path(project)
+    project_directory = _directory_path("--project", project)
     if access_paths and mode is None:
         raise BridgeError(
             Failure.USAGE_ERROR,
             detail="--access-path requires an explicit --mode session",
-        )
-    if mode is not None and mode not in SESSION_MODES:
-        raise BridgeError(
-            Failure.USAGE_ERROR,
-            detail="--mode must be one of: {0}".format(", ".join(SESSION_MODES)),
         )
     declared_access = _access_paths(access_paths)
     try:

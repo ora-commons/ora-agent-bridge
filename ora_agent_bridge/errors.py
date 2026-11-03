@@ -1,15 +1,8 @@
 """The one internal list of ways an Ora Agent Bridge turn can fail.
 
-This enumeration is implementation-internal. It is not a public protocol, not a
-wire format, and not a third-party compatibility surface: nothing outside this
-repository should depend on the member names or on their spelling, and they may
-be renamed whenever the code needs it.
-
-Its purpose is narrow. Connectors translate whatever a vendor's command-line
-program did into exactly one of these members and may not invent private codes
-of their own. Only the runner turns a member into words, using `render()` below,
-so every failure reaches a person the same way: what happened, and the one thing
-to do next.
+Connectors map vendor behavior into exactly one of these members; only the
+runner turns a member into words, so every failure reads the same way: what
+happened, and the one thing to do next. The names are not a public surface.
 
 SPDX-License-Identifier: CC0-1.0
 """
@@ -27,10 +20,7 @@ class Failure(enum.Enum):
     MISSING_CLI = "MISSING_CLI"
     AUTHENTICATION_REQUIRED = "AUTHENTICATION_REQUIRED"
     UNREPORTABLE_VERSION = "UNREPORTABLE_VERSION"
-    UNQUALIFIED_VERSION = "UNQUALIFIED_VERSION"
-    UNQUALIFIED_PLATFORM = "UNQUALIFIED_PLATFORM"
     RESTRICTIONS_UNAVAILABLE = "RESTRICTIONS_UNAVAILABLE"
-    QUALIFICATION_UNSAFE_OR_INCONCLUSIVE = "QUALIFICATION_UNSAFE_OR_INCONCLUSIVE"
 
     # Running one bounded turn.
     BUSY_SESSION = "BUSY_SESSION"
@@ -42,7 +32,6 @@ class Failure(enum.Enum):
     # Calling the commands correctly.
     USAGE_ERROR = "USAGE_ERROR"
     UNKNOWN_HARNESS = "UNKNOWN_HARNESS"
-    CONNECTOR_UNAVAILABLE = "CONNECTOR_UNAVAILABLE"
     UNKNOWN_RECORD_KIND = "UNKNOWN_RECORD_KIND"
 
     # Reading and writing the session record.
@@ -51,7 +40,6 @@ class Failure(enum.Enum):
     SESSION_EXISTS = "SESSION_EXISTS"
     PUBLICATION_FAILURE = "PUBLICATION_FAILURE"
     PUBLICATION_NOT_FLUSHED = "PUBLICATION_NOT_FLUSHED"
-    PUBLICATION_UNCERTAIN = "PUBLICATION_UNCERTAIN"
 
 
 # For each failure: what happened, then the single next action.
@@ -74,31 +62,11 @@ _GUIDANCE: Dict[Failure, Tuple[str, str]] = {
         "readable, this harness cannot be qualified and must not be used on a "
         "real project.",
     ),
-    Failure.UNQUALIFIED_VERSION: (
-        "The installed version of the peer harness is outside the versions this "
-        "connector has actually been tested against.",
-        "Install a tested version, or rerun the disposable qualification "
-        "against the installed version and update the connector's declaration "
-        "in source.",
-    ),
-    Failure.UNQUALIFIED_PLATFORM: (
-        "This operating system family or major version is outside the coverage "
-        "this connector has actually been tested on.",
-        "Use a tested platform, or rerun the disposable qualification there and "
-        "update the connector's declaration in source.",
-    ),
     Failure.RESTRICTIONS_UNAVAILABLE: (
         "The peer harness does not offer a switch or one-shot input/output "
         "mechanic required by Ora Agent Bridge's fixed invocation.",
         "Inspect the named missing mechanic and update or correct the harness "
         "before checking it again.",
-    ),
-    Failure.QUALIFICATION_UNSAFE_OR_INCONCLUSIVE: (
-        "The disposable qualification run did not clearly prove the harness "
-        "stayed inside its approved boundary.",
-        "Read the reported synthetic-repository path, work out what happened, "
-        "and rerun qualification; do not use this harness on a real project "
-        "until it passes.",
     ),
     Failure.BUSY_SESSION: (
         "Another Ora Agent Bridge turn is already holding this session's lock.",
@@ -138,11 +106,6 @@ _GUIDANCE: Dict[Failure, Tuple[str, str]] = {
         "The named target is not one of the six Ora Agent Bridge knows about.",
         "Name one of: codex, claude, zcode, hermes, minimax, qwen.",
     ),
-    Failure.CONNECTOR_UNAVAILABLE: (
-        "That harness identifier is real, but this build ships no connector "
-        "able to call it.",
-        "Use a harness whose connector ships in this build.",
-    ),
     Failure.UNKNOWN_RECORD_KIND: (
         "That record kind is not one of the two the record command accepts.",
         "Name one of: session-create, note.",
@@ -166,9 +129,11 @@ _GUIDANCE: Dict[Failure, Tuple[str, str]] = {
     ),
     Failure.PUBLICATION_FAILURE: (
         "The message could not be written in full and moved into place, so "
-        "nothing was published and the record is unchanged.",
-        "Check that the session directory is writable and has free space, then "
-        "run the command again.",
+        "it may not have arrived at its recorded name.",
+        "Look in the session's messages folder for the reported file before "
+        "running the command again: if it is there the message is complete; "
+        "if it is absent, check that the session directory is writable and "
+        "has free space, then run the command again.",
     ),
     Failure.PUBLICATION_NOT_FLUSHED: (
         "The message was written and moved into place, so it is published, but "
@@ -177,25 +142,11 @@ _GUIDANCE: Dict[Failure, Tuple[str, str]] = {
         "Confirm the reported file is there and readable, and treat this turn "
         "as unfinished until the session directory's disk is behaving.",
     ),
-    Failure.PUBLICATION_UNCERTAIN: (
-        "Something went wrong while the message was being moved into place, "
-        "and the canonical name could not then be examined, so there is no "
-        "telling whether the message reached it.",
-        "Look in the session's messages folder for the reported file before "
-        "you do anything else: if it is there, the message is complete and "
-        "the writing is finished; if it is absent, the message never arrived. "
-        "Do not run the command again until you know which of the two it is.",
-    ),
 }
 
 
 def render(failure: Failure, detail: Optional[str] = None) -> str:
-    """Turn one failure into the message a person reads.
-
-    The result is always the same two things in the same order: what happened,
-    then the single next action. `detail` is optional observed fact - a path, an
-    observed version, a process id - added in parentheses after the reason.
-    """
+    """One failure as the message a person reads: reason, then next action."""
     reason, next_action = _GUIDANCE[failure]
     if detail:
         reason = "{0} ({1})".format(reason, detail)
@@ -203,21 +154,12 @@ def render(failure: Failure, detail: Optional[str] = None) -> str:
 
 
 def guidance(failure: Failure) -> Tuple[str, str]:
-    """The plain reason and the single next action for one failure.
-
-    For the structured readiness and event results, which report the two
-    separately rather than as one sentence.
-    """
+    """The plain reason and the single next action for one failure."""
     return _GUIDANCE[failure]
 
 
 class BridgeError(Exception):
-    """One failure, carried out to whoever renders the message.
-
-    Holds the failure member and any observed detail worth showing, so the
-    runner can print one actionable message and choose an exit status without
-    inspecting exception text.
-    """
+    """One failure, carried out to whoever renders the message."""
 
     def __init__(self, failure: Failure, detail: Optional[str] = None) -> None:
         super().__init__(render(failure, detail))

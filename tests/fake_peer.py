@@ -1,42 +1,22 @@
 #!/usr/bin/env python3
 """A stand-in for a real coding-agent harness.
 
-The runner's job is to start one program, hand it a Markdown body on standard
-input, wait for one answer, and decide what that answer means. None of that
-needs a real harness, a real subscription, or a real model - it needs a program
-that behaves in one chosen way. This is that program.
+Started exactly as a real peer is — `[sys.executable, "<path>/fake_peer.py",
+"<mode>", ...]` — it reads the whole of standard input and then behaves
+according to its mode. Two families of modes exist: what a peer says (an
+echo of the body, the final argument echoed for a command-line transport,
+an empty or whitespace answer, a deliberate failure, a delayed echo) and
+what a peer leaves behind (a program that will not stop, and fixtures that
+report their process ids into a named file so a check can watch those
+exact processes). `noisy-echo` also prints a vendor-style session identity,
+a credential line, and a progress line, so a check can prove what a
+returned-control turn retained and what was sanitized out of it;
+`stop-parent-then-hang` terminates the process that started it, so a check
+can be interrupted mid-wait without a driver of its own.
 
-It is started exactly as a real peer is:
-
-    [sys.executable, "<path>/fake_peer.py", "<mode>", ...]
-
-It reads the whole of standard input, and then behaves according to its mode.
-Every mode exists because some check needs it, and there are only two families
-of them.
-
-The first is about what a peer says: a good answer, which is whatever it was
-given handed straight back; no answer at all; an answer that is nothing but
-whitespace; and, for a harness that takes the message on its command line
-rather than on standard input, the final argument handed straight back, with a
-complaint appended if anything arrived on standard input as well. Between them
-they are every shape the runner has to tell apart when it decides whether there
-is anything to publish, and both ways a body can travel.
-
-The second is about what a peer leaves behind: a program that exits badly, one
-that will not stop, one that starts a child and then will not stop, and three
-that report their own process id and their child's into a file the check
-names, so a check can watch those exact processes rather than guessing at
-them. Of those last three, one hangs with the child in the process group the
-turn owns, one answers at once and leaves the child alive behind it - the
-parent-exits-first shape, where cleanup arrives to find no root to walk - and
-one lets the child escape into a session of its own, which is the stated
-limit of what any cleanup can reach. The children that may outlive their
-parent sleep a bounded minute, so even a check that failed to end one cannot
-leave it about.
-
-It imports nothing outside the standard library, touches nothing except the
-input it is given, the file it is told to write its process ids into, and the
-output streams it is handed. It never sleeps without a bound.
+It imports nothing outside the standard library, touches nothing except
+its input, the file it is told to write into, and its output streams, and
+never sleeps without a bound.
 
 SPDX-License-Identifier: CC0-1.0
 """
@@ -47,35 +27,8 @@ import subprocess
 import sys
 import time
 
-#: Every supported mode, in the order the docstring above describes them.
-#: `delay-echo` exists for the lifecycle check-ins: it sleeps for a named
-#: number of seconds and then answers like `plain`, so a caller watching a
-#: bounded wait can observe heartbeats arriving while the child runs and one
-#: final result after it. `noisy-echo` sleeps the same way but first prints
-#: a vendor-style session identity, a credential line, and a progress line,
-#: so a check can prove what a returned-control or stopped turn retained and
-#: what was sanitized out of it. `stop-parent-then-hang` does the same and
-#: then terminates the process that started it, so a check can be interrupted
-#: mid-wait without a driver of its own.
-MODES = (
-    "plain",
-    "last-argument",
-    "empty",
-    "whitespace",
-    "fail",
-    "hang",
-    "delay-echo",
-    "noisy-echo",
-    "spawn-child-then-hang",
-    "write-pids-then-hang",
-    "write-pids-then-exit",
-    "detach-child-then-hang",
-    "stop-parent-then-hang",
-)
-
 #: Long enough to outlast any real deadline, short enough that a stray copy
-#: cannot survive the day. The sleep is a loop of short naps so a termination
-#: signal is acted on at once.
+#: cannot survive the day, in short naps so a signal is acted on at once.
 MAX_SLEEP_SECONDS = 3600.0
 NAP_SECONDS = 0.05
 
@@ -83,88 +36,45 @@ THIS_FILE = os.path.abspath(__file__)
 
 
 def _read_all_stdin() -> str:
-    """Consume the whole incoming body before doing anything else."""
     data = sys.stdin.buffer.read()
     return data.decode("utf-8", "replace")
 
 
 def _emit(text: str) -> None:
-    """Write exactly these bytes to standard output, unchanged."""
     sys.stdout.buffer.write(text.encode("utf-8"))
     sys.stdout.buffer.flush()
 
 
 def _echoed(body: str) -> str:
-    """The received body, ending in a newline so a line can follow it."""
     if not body:
         return ""
-    if body.endswith("\n"):
-        return body
-    return body + "\n"
+    return body if body.endswith("\n") else body + "\n"
 
 
 def _sleep_bounded(seconds: float) -> None:
-    """Sleep in short naps up to a fixed bound, never forever."""
     deadline = time.time() + min(seconds, MAX_SLEEP_SECONDS)
     while time.time() < deadline:
         time.sleep(NAP_SECONDS)
 
 
-def _spawn_grandchild(
-    detached: bool = False, seconds: str = "", inherit_output: bool = True
-) -> int:
-    """Start one child that sleeps, and say where it was put.
-
-    By default there is no new session and no new process group: the grandchild
-    stays in the group the runner created, so terminating that group must reach
-    it. A runner that kills only its direct child leaves this process behind,
-    which is the thing the orphan check is looking for.
-
-    With `detached`, the child asks for a session of its own and so leaves the
-    group this turn owns. Nothing portable can reach it after that, which is
-    the honest limit one check exists to measure. Such a child is given a short
-    sleep so that even a check that failed to end it cannot leave it about.
-
-    Unless `inherit_output` is false, the child shares this program's output
-    streams. The one mode that answers and exits while leaving a child alive
-    needs it false: a child holding the output pipes open would keep the
-    caller waiting for an end-of-file its peer already sent.
-    """
-    argv = [sys.executable, THIS_FILE, "hang"]
-    if seconds:
-        argv.append(seconds)
-    output = None if inherit_output else subprocess.DEVNULL
+def _spawn_child() -> int:
     child = subprocess.Popen(
-        argv,
-        stdin=subprocess.DEVNULL,
-        stdout=output,
-        stderr=output,
-        start_new_session=detached,
+        [sys.executable, THIS_FILE, "hang"], stdin=subprocess.DEVNULL,
     )
     return child.pid
 
 
 def _write_pids(path: str, child_pid: int) -> None:
-    """Say which two processes now exist, and force it onto the disk.
-
-    A check outside cannot see either process id any other way: this program's
-    output is held in a pipe until the call ends, and by then the processes it
-    wants to watch are meant to be gone.
-    """
     with open(path, "w", encoding="utf-8") as stream:
         stream.write("PEER {0}\nCHILD {1}\n".format(os.getpid(), child_pid))
         stream.flush()
         os.fsync(stream.fileno())
 
 
-def _one_path(mode: str, extra: list) -> str:
-    """The single path argument a mode needs, or an empty string if missing."""
-    if len(extra) != 1 or not extra[0]:
-        sys.stderr.write(
-            "fake peer: {0} needs exactly one path\n".format(mode)
-        )
-        return ""
-    return extra[0]
+def _seconds_from(extra: list, default: float = 0.0) -> float:
+    if not extra:
+        return default
+    return float(extra[0])
 
 
 def _run(mode: str, extra: list) -> int:
@@ -176,9 +86,9 @@ def _run(mode: str, extra: list) -> int:
         return 0
 
     if mode == "last-argument":
-        # The body travelled as the final argument; hand that back exactly.
-        # Standard input should have carried nothing, and if it did, say so
-        # where a check will see it.
+        # The body travelled as the final argument; hand that back exactly,
+        # and complain where a check will see it if standard input was not
+        # empty.
         _emit(_echoed(extra[-1]) if extra else "")
         if body:
             _emit("STDIN WAS NOT EMPTY\n")
@@ -197,43 +107,16 @@ def _run(mode: str, extra: list) -> int:
         return 3
 
     if mode == "hang":
-        seconds = MAX_SLEEP_SECONDS
-        if extra:
-            try:
-                seconds = float(extra[0])
-            except ValueError:
-                sys.stderr.write("fake peer: seconds must be a number\n")
-                return 2
-        _sleep_bounded(seconds)
+        _sleep_bounded(_seconds_from(extra, MAX_SLEEP_SECONDS))
         return 0
 
     if mode == "delay-echo":
-        seconds = 0.0
-        if extra:
-            try:
-                seconds = float(extra[0])
-            except ValueError:
-                sys.stderr.write("fake peer: seconds must be a number\n")
-                return 2
-        _sleep_bounded(seconds)
+        _sleep_bounded(_seconds_from(extra))
         _emit(echoed)
         return 0
 
     if mode in ("noisy-echo", "stop-parent-then-hang"):
-        seconds = 0.0
-        if mode == "noisy-echo" and extra:
-            try:
-                seconds = float(extra[0])
-            except ValueError:
-                sys.stderr.write("fake peer: seconds must be a number\n")
-                return 2
-        if mode == "stop-parent-then-hang":
-            if len(extra) != 2:
-                sys.stderr.write(
-                    "fake peer: {0} needs seconds and a pid path\n".format(mode)
-                )
-                return 2
-            seconds = float(extra[0])
+        seconds = _seconds_from(extra) if mode == "noisy-echo" else float(extra[0])
         sys.stderr.write("session id: fake-peer-session-0001\n")
         sys.stderr.write("OPENAI_API_KEY=opaque-value\n")
         sys.stderr.flush()
@@ -249,53 +132,20 @@ def _run(mode: str, extra: list) -> int:
             _emit(echoed)
         return 0
 
-    if mode == "spawn-child-then-hang":
-        _emit("GRANDCHILD {0}\n".format(_spawn_grandchild()))
+    if mode == "write-pids-then-hang":
+        # The child stays in the group the runner created, so terminating
+        # that group must reach it; a runner that kills only its direct
+        # child leaves this process behind.
+        _write_pids(extra[0], _spawn_child())
         _sleep_bounded(MAX_SLEEP_SECONDS)
         return 0
 
-    if mode in ("write-pids-then-hang", "write-pids-then-exit",
-                "detach-child-then-hang"):
-        path = _one_path(mode, extra)
-        if not path:
-            return 2
-        if mode == "write-pids-then-exit":
-            # The parent-exits-first shape: both process ids are reported,
-            # the child is left alive behind the peer without holding its
-            # output pipes, and the peer answers at once - so a cleanup
-            # arrives to find no root to walk from.
-            _write_pids(
-                path, _spawn_grandchild(seconds="60", inherit_output=False)
-            )
-            return 0
-        detached = mode == "detach-child-then-hang"
-        _write_pids(
-            path,
-            _spawn_grandchild(
-                detached=detached, seconds="60" if detached else ""
-            ),
-        )
-        _sleep_bounded(MAX_SLEEP_SECONDS)
-        return 0
-
-    sys.stderr.write(
-        "fake peer: unknown mode {0!r}; known modes: {1}\n".format(
-            mode, ", ".join(MODES)
-        )
-    )
     return 2
 
 
 def main(argv: list) -> int:
-    args = list(argv[1:])
-    if not args:
-        sys.stderr.write(
-            "usage: fake_peer.py <mode> [args]; known modes: {0}\n".format(
-                ", ".join(MODES)
-            )
-        )
-        return 2
-    return _run(args[0], args[1:])
+    arguments = argv[1:]
+    return _run(arguments[0], arguments[1:])
 
 
 if __name__ == "__main__":

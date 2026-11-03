@@ -1,8 +1,5 @@
 """Let the package be run directly: `python3 -m ora_agent_bridge <command> ...`.
 
-Native packages start Ora Agent Bridge exactly this way - as a fixed argument
-vector, with no shell and no installed console script to depend on.
-
 SPDX-License-Identifier: CC0-1.0
 """
 

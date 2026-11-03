@@ -4,7 +4,7 @@
 prose by default or one JSON object with `--json`. `run` reads target, mode,
 and directories only from its immutable session. `record` creates that session
 or writes a neutral note. Substantive Markdown always arrives on standard
-input. Omitting every extended option keeps the original Format 2 behavior
+input; omitting every extended option keeps the original Format 2 behavior
 byte for byte.
 
 SPDX-License-Identifier: CC0-1.0
@@ -13,21 +13,17 @@ SPDX-License-Identifier: CC0-1.0
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import queue
 import threading
-import shutil
 import sys
-import tempfile
-from typing import Iterator, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 from . import VERSION, connectors, record as record_module, runner
 from .errors import BridgeError, Failure, guidance
 from .peer import READINESS_TIMEOUT_SECONDS, Deadline, SignalStop
 
 PROGRAM = "ora-agent-bridge"
-NEUTRAL_PREFIX = "agent-bridge-neutral-"
 
 
 class _Parser(argparse.ArgumentParser):
@@ -110,91 +106,39 @@ def _read_body() -> str:
 
 
 def _write_stdout(text: str) -> None:
-    """Write one piece of standard output and push it out of the buffer now.
+    """Write one piece of standard output and flush it now.
 
-    Python buffers standard output when it is a pipe, and a caller watching a
-    run's event stream is watching a pipe: an unflushed write would sit in
-    the buffer until the process ended, which for a long turn is the whole
-    turn. Every line this command means to deliver as it happens - the
-    lifecycle events, and the terminal response-path line - goes through
-    here, so each one is flushed the moment it is written.
+    A caller watching a run's event stream is watching a pipe, and an
+    unflushed write would sit in the buffer until the process ended - which
+    for a long turn is the whole turn.
     """
     sys.stdout.write(text)
     sys.stdout.flush()
-
-
-def _remove_neutral(path: str, during: Optional[BaseException]) -> None:
-    try:
-        shutil.rmtree(path)
-    except OSError as failed:
-        if during is not None:
-            raise BridgeError(
-                Failure.CLEANUP_FAILURE,
-                detail="the neutral working directory {0} could not be removed "
-                "after the command failed ({1}): {2}".format(
-                    path, during, failed
-                ),
-            )
-        raise BridgeError(
-            Failure.CLEANUP_FAILURE,
-            detail="the neutral working directory {0} could not be removed: "
-            "{1}".format(path, failed),
-        )
-
-
-@contextlib.contextmanager
-def _check_directory() -> Iterator[str]:
-    try:
-        neutral = tempfile.mkdtemp(prefix=NEUTRAL_PREFIX)
-    except OSError as exc:
-        raise BridgeError(
-            Failure.USAGE_ERROR,
-            detail="no neutral working directory could be made: {0}".format(exc),
-        )
-    try:
-        yield neutral
-    except BaseException as exc:
-        _remove_neutral(neutral, exc)
-        raise
-    _remove_neutral(neutral, None)
 
 
 def _check(args: argparse.Namespace) -> connectors.CheckResult:
     mode = args.mode or "review"
     connectors.validate_work_permission(args.peer, mode, args.work_permission)
     connector = connectors.resolve(args.peer)
-    with _check_directory() as cwd:
-        if mode == "work":
-            if args.work_permission is not None:
-                return connector.check(
-                    Deadline(READINESS_TIMEOUT_SECONDS), cwd, mode="work",
-                    work_permission=args.work_permission,
-                )
-            return connector.check(
-                Deadline(READINESS_TIMEOUT_SECONDS), cwd, mode="work"
-            )
-        return connector.check(Deadline(READINESS_TIMEOUT_SECONDS), cwd)
+    with runner._target_directory(None) as cwd:
+        check_options = {"mode": mode}
+        if mode == "work" and args.work_permission is not None:
+            check_options["work_permission"] = args.work_permission
+        return connector.check(
+            Deadline(READINESS_TIMEOUT_SECONDS), cwd, **check_options
+        )
 
 
 def _check_json(args: argparse.Namespace) -> int:
     """One machine-readable readiness result, success or failure alike.
 
-    The object carries the selected peer and mode, usability, the identity and
-    version of this loaded Bridge copy, whether the local command is present,
+    The object carries the selected peer and mode, usability, this loaded
+    Bridge copy's identity and version, whether the local command is present,
     the executable/version/platform facts, tri-state authentication, the
-    connector's implemented review/work/image actions, the switches a caller-
-    named model or effort choice would travel on, the compatibility of the
-    loaded combination, and warnings. The implemented actions and choice
-    switches are source facts of the connector, so a failed login or a
-    missing command does not erase them. `compatibility` is `supported` when
-    the installed version and
-    platform are inside the connector's exercised release evidence, and
-    `unknown` when they are outside it or nothing established either way;
-    `unsupported` means the requested action is an implemented-but-refused
-    route such as work for a courier-only target. A hard failure still exits
-    nonzero, with the reason and next action inside the object rather than on
-    standard error, and `compatibility` null because it was not established.
-    It deliberately names no schema version: the field set is the contract.
+    connector's implemented review/work/image actions, the switches a
+    caller-named model or effort choice would travel on, the compatibility
+    of the loaded combination, and warnings. A hard failure still exits
+    nonzero, with the reason and next action inside the object.
     """
     mode = args.mode or "review"
     result = {
@@ -222,9 +166,7 @@ def _check_json(args: argparse.Namespace) -> int:
                 ),
             }
         )
-        if checked.selected_model_verified is not None:
-            result["selected_model_verified"] = checked.selected_model_verified
-        for field in ("effective_permission", "headless_shell", "shell_execution_verified"):
+        for field in ("selected_model_verified", "effective_permission", "headless_shell", "shell_execution_verified"):
             value = getattr(checked, field)
             if value is not None:
                 result[field] = value
@@ -248,9 +190,7 @@ def _check_json(args: argparse.Namespace) -> int:
         result["work"] = capability.work
         result["image"] = capability.image
         # The choices this tool documents for a caller-named model or effort,
-        # gathered from the connector's declaration without a model call. A
-        # field appears only when the tool documents that choice; its absence
-        # is the fact that a named choice is refused.
+        # gathered from the connector's declaration without a model call.
         choices = connector.CHOICE_SWITCHES
         if choices.model is not None:
             result["model_switch"] = choices.model
@@ -296,7 +236,6 @@ def _run(args: argparse.Namespace) -> Tuple[int, Optional[str]]:
         session_dir=args.session,
         body=body,
         wait_seconds=args.timeout,
-        no_timeout=args.no_timeout,
         warning_writer=lambda warning: sys.stderr.write(
             "Warning: {0}\n".format(warning)
         ),
@@ -317,10 +256,9 @@ def _run(args: argparse.Namespace) -> Tuple[int, Optional[str]]:
             # flag-free run prints would only duplicate it on the event stream.
             return 0, None
         return 0, result.response_path
-    evidence = result.detach()
     if not args.events_jsonl:
         sys.stderr.write(
-            runner.render_pending(evidence, args.timeout) + "\n"
+            runner.render_pending(result.evidence, args.timeout) + "\n"
         )
     return 1, None
 

@@ -1,16 +1,17 @@
 """The hand-written Qwen Code courier connector.
 
 Qwen Code 0.23.0 supplies a safe mode, explicit plan posture, run budgets,
-zero-model-tool-call guard, and stream-JSON standard input and output.
-The connector keeps the user's normal QWEN_HOME so authentication is not
-hidden, while putting transient output inside the task-owned neutral directory
-and disabling compatible usage statistics and telemetry for this child. Qwen
-alone may preprocess the unchanged body before the model; that exception is
-reported explicitly rather than hidden behind the later zero-tool-call budget.
-There is deliberately no work builder and no image route: `CAPABILITIES`
-records the source-read reasons (approval modes that either cannot ask
-headlessly or auto-approve, and a stream-json reader that stringifies
-non-text content), so work mode is refused with that finding instead of built.
+zero-model-tool-call guard, and stream-JSON standard input and output. The
+connector keeps the user's normal QWEN_HOME so authentication is not hidden,
+puts transient output inside the task-owned neutral directory, and disables
+compatible usage statistics and telemetry for this child. Qwen alone may
+preprocess the unchanged body before the model - recognized leading `/`
+commands and unescaped `@` references, in both text and stream-json headless
+input, before the zero model-tool-call budget - and that exception is warned
+about rather than hidden. There is deliberately no work builder and no image
+route: `CAPABILITIES` records the source-read reasons (approval modes that
+either cannot ask headlessly or auto-approve, and a stream-json reader that
+stringifies non-text content as JSON text rather than pixels).
 
 SPDX-License-Identifier: CC0-1.0
 """
@@ -18,7 +19,6 @@ SPDX-License-Identifier: CC0-1.0
 from __future__ import annotations
 
 import json
-import math
 import os
 from typing import List, Tuple
 
@@ -27,7 +27,6 @@ from .errors import BridgeError, Failure
 from .peer import Deadline
 
 HARNESS_ID = "qwen"
-COURIER_ONLY = True
 
 QUALIFICATION = connectors.Qualification(
     cli_identity="qwen",
@@ -43,7 +42,6 @@ QUALIFICATION = connectors.Qualification(
         "--disabled-slash-commands",
         "--max-tool-calls",
         "--max-session-turns",
-        "--max-wall-time",
         "--input-format",
         "--output-format",
         "--openai-logging",
@@ -51,7 +49,6 @@ QUALIFICATION = connectors.Qualification(
 )
 
 RUNTIME_DIRECTORY = ".qwen-runtime"
-MAX_NATIVE_WALL_TIME_SECONDS = 2_147_483
 CONTROLLED_ENVIRONMENT = (
     "QWEN_CODE_RELAUNCH_ARGS",
     "QWEN_RUNTIME_DIR",
@@ -104,17 +101,14 @@ BOUNDARY_WARNING = (
     "and same-user CLI read access remain outside Ora Agent Bridge confinement."
 )
 
-#: What this connector offers beyond its restricted review call: nothing, and
-#: for stated reasons read out of the installed program. Qwen Code 0.23.0's
-#: ordinary approval mode (`--approval-mode default`) requires manual approval
-#: for file edits and shell commands, and a headless run cannot ask: in text
-#: mode the call is cancelled with "the host could not present the required
-#: approval", and in stream-json mode the program asks the calling host to
-#: approve, which would make Bridge the permission authority. The modes that
-#: proceed unattended (`auto-edit`, `auto`, `yolo`) are automatic approval
-#: modes, which Bridge must not enable to make headless work succeed. For
-#: images, the stream-json reader turns every non-text content block into
-#: JSON text rather than pixels, and there is no attachment switch.
+#: What this connector offers beyond its restricted review call: nothing,
+#: and for stated reasons read out of the installed program. Qwen Code
+#: 0.23.0's ordinary approval mode (`--approval-mode default`) requires
+#: manual approval for file edits and shell commands, and a headless run
+#: cannot ask; the modes that proceed unattended (`auto-edit`, `auto`,
+#: `yolo`) are automatic approvals Bridge must not select. For images, the
+#: stream-json reader turns every non-text content block into JSON text
+#: rather than pixels, and there is no attachment switch.
 CAPABILITIES = connectors.Capabilities(
     work="unsupported",
     work_detail=(
@@ -134,9 +128,8 @@ CAPABILITIES = connectors.Capabilities(
 
 #: The switches a caller-named model or effort choice would travel on: none.
 #: This connector's fixed vector adds no model selection or credential
-#: handling of any kind - Qwen keeps the user's existing authentication and
-#: provider setup, and the vector disables the `/model` and `/effort`
-#: pre-model command families - so the runner refuses a named choice before
+#: handling of any kind, and it disables the `/model` and `/effort`
+#: pre-model command families, so the runner refuses a named choice before
 #: publication and Qwen answers on its own configured model.
 CHOICE_SWITCHES = connectors.ChoiceSwitches()
 
@@ -226,10 +219,8 @@ def _prerequisites(
 
     A review turn proves the review vector's switches exist on the installed
     program. A work-mode check performs no switch qualification at all: work
-    is unsupported for reasons recorded in `CAPABILITIES`, read from the
-    installed program's source, and no review switch is a prerequisite of
-    reporting that. The version and platform facts and the honest
-    authentication state are the same in both modes.
+    is unsupported for reasons recorded in `CAPABILITIES`, and no review
+    switch is a prerequisite of reporting that.
     """
     warnings = []  # type: List[str]
     program = connectors.executable(QUALIFICATION.cli_identity)
@@ -279,20 +270,6 @@ def build_command(deadline: Deadline, cwd: str) -> connectors.PeerCommand:
     program, _version, _described, _account, warnings = _prerequisites(
         deadline, cwd
     )
-    # Qwen's timer starts only after this process starts. It is keyed to the
-    # work bound, never the readiness bound, so an ordinary turn - whose work
-    # has no deadline - passes no native kill at all, and a bounded vector
-    # hands Qwen the rounded-up duration so Bridge's bound stays the
-    # authoritative one.
-    native_wall_time = (
-        (
-            "--max-wall-time={0}s".format(
-                max(1, int(math.ceil(deadline.work_seconds)))
-            ),
-        )
-        if deadline.work_seconds <= MAX_NATIVE_WALL_TIME_SECONDS
-        else ()
-    )
     return connectors.PeerCommand(
         argv=(
             program,
@@ -304,9 +281,6 @@ def build_command(deadline: Deadline, cwd: str) -> connectors.PeerCommand:
             "bug,config,update,import-config,language,effort,model,doctor",
             "--max-tool-calls=0",
             "--max-session-turns=1",
-        )
-        + native_wall_time
-        + (
             "--input-format=stream-json",
             "--output-format=stream-json",
             "--openai-logging=false",

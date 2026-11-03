@@ -1,118 +1,17 @@
 """Starting one program, waiting for one answer, and leaving nothing behind.
 
-Everything Ora Agent Bridge starts is started here, the same way, and cleaned up
-the same way. There is one function worth understanding for the programs a
-turn asks questions of, `run_bounded`, and one construct for the AI work
-itself, `start_call`: the first bounds a probe with a deadline because a
-readiness question is not work, and the second starts a peer whose waits
-never kill it, so that returning control and abandoning the work are two
-different acts. The care in both is about two questions: what may be
-started, and what must be gone afterwards.
-
-**What may be started.** A fixed list of arguments, with no shell anywhere. The
-outgoing Markdown goes down the program's standard input, or, for the one kind
-of connector that has proved its harness has no standard-input path, arrives
-bound to an option as a single final argument that the runner composed; either
-way no shell ever sees it, so text a peer or a plan may have influenced never
-becomes part of a command.
-
-**What must be gone afterwards.** The child is started as its own session
-leader, which makes it the leader of a brand new process group containing it and
-anything it starts. That group is the exact set of processes this turn owns.
-Cleanup signals that group and nothing else - never a name, never a scan of
-unrelated processes, never a guess. Before signalling anything, the code
-confirms that the group's number really is the child's own process id, which is
-the check that makes it impossible to signal the group Ora Agent Bridge itself is
-running in.
-
-On Windows the same ownership is built with that platform's own primitives,
-because the Unix ones do not exist there. The child is created with
-`CREATE_NEW_PROCESS_GROUP` and `CREATE_SUSPENDED`: the first makes it the
-leader of a brand new group numbered by its own process id - the direct twin
-of the new session, and the fact the ownership check relies on rather than
-reads back - and the second leaves its primary thread unstarted, so that not
-one instruction of the child's own has run. The polite signal is the console
-break event that group exists to receive, a courtesy a child may ignore and a
-console-less caller cannot even send. The guarantee lives elsewhere, in
-ownership that does not need the root alive to be exercised and that now
-precedes execution outright: while the child is still suspended it is placed
-in a Windows job object configured to kill on close, and only then is the
-primary thread resumed, so everything the child ever starts - including
-whatever it starts with its first instruction - is a member of that job with
-no breakaway allowed, and the tree stays owned whichever of its processes
-dies first. Closing this code's handle to the job is the forced phase - the
-kernel terminates every member, root or descendant - and the same close is
-what happens if Ora Agent Bridge itself is killed, because the operating system
-closes a process's handles when it ends. The operating system's own
-`taskkill /T /F` on the root pid remains as a belt-and-braces force and as
-the confirmation, with one limit: its tree walk starts at the root, so once
-the root has exited, not-found says nothing about the descendants it would
-have named. Not-found is therefore read as emptiness only after the job has
-been closed, and a platform that refuses the job or the resume refuses the
-turn - what was just started has never run, so it is terminated outright
-with nothing yet beside it, and the refusal is the answer rather than a tree
-nobody owns. The Unix branches below are untouched by all of this, and no
-Windows machine was available to exercise the Windows branches live - they
-are covered by the unit checks with the Windows primitives simulated, and
-that limit is stated rather than hidden.
-
-**What ends the waiting.** For a bounded probe (`run_bounded`): the program
-answers, the deadline passes, or somebody stops Ora Agent Bridge. For AI work
-(`start_call`): the peer answers, or somebody stops the run - there is no
-elapsed-time deadline at all, and a bounded wait that runs out merely returns
-control with the peer still running, its result still collectable by the
-process that owns it. All of these become exceptions or explicit returns, so
-they all leave by routes whose cleanup runs. The signal handlers are put back
-exactly as they were found on the way out, and a stop deferred while a
-`PeerCall` is between waits is raised at the next one - deferral changes when
-a stop is raised, never whether.
-
-**When a stop raises, and when it waits.** Raising where it lands is right for
-exactly one stretch of a turn - the wait for the program's answer - and wrong
-for the rest of it.
-
-It is wrong while the child is being created: between the operating system
-making the process and this code knowing which group it belongs to, a stop that
-raised would leave a running program that nothing had yet taken responsibility
-for. It is wrong during cleanup: a second stop arriving while the group is being
-emptied would abandon the emptying half done, which is the opposite of what the
-person pressing the key wants.
-
-So it is arranged the other way round from what might be expected. A stop is
-deferred - written down rather than raised - for the whole life of the child,
-and one window is opened, around the wait, where it raises immediately. That
-window sits inside the cleanup that catches what it raises. There is therefore
-no instruction anywhere between the child appearing and its group being empty at
-which a stop can leave without cleanup having run. Once it has, the stop that
-was written down is raised.
-
-All three stops go through this, the keyboard interrupt included. Ctrl-C still
-raises `KeyboardInterrupt` exactly as it always did, and is handled here for one
-reason only: a handler of our own can be made to wait through those moments,
-where Python's own cannot. Leaving it out would leave the commonest way of
-stopping a program the one way that could still strand a peer.
-
-Deferral changes when a stop is raised, never whether.
-
-**What cannot be cleaned up, honestly.** Four things. Being killed outright with
-`SIGKILL` cannot be caught by any program. A machine that loses power runs no
-cleanup code. A child that deliberately puts itself into its own session has
-left the group this turn owns and can no longer be reached by signalling that
-group. And a turn run off the main thread has no handlers at all: Python only
-ever delivers a signal to the main thread, and only the main thread may install
-a handler, so a termination signal there does whatever the surrounding program
-already arranged - which, by default, ends the process at once and leaves the
-peer running. The turn still goes ahead in that case, because refusing to work
-would be worse, but the tidy exit is not available and is not claimed.
-
-None of the four can be controlled portably, so none of them is pretended about.
-The consequence for connectors is concrete: a harness command-line program that
-daemonizes during a turn puts its work beyond this cleanup and must therefore
-fail qualification.
-
-The deadline covers the useful work: prechecks, the call and the answer. Cleanup
-afterwards gets its own separate bounded grace, because a deadline that has
-already run out cannot be used to decide how long to wait for a process to die.
+Everything Ora Agent Bridge starts is started here the same way - a fixed
+argument vector with no shell - and cleaned up the same way: the child is
+started as its own session leader (POSIX) or in a kill-on-close job object
+assigned before its first instruction runs (Windows), and cleanup signals
+exactly that owned set. `run_bounded` bounds a probe with a deadline because
+a readiness question is not work; `start_call` starts a peer whose waits
+never kill it. A stop is deferred - written down rather than raised - for the
+whole life of the child, with one window around the wait where it raises
+immediately inside the cleanup that catches it, so no stop can leave a child
+behind. What cannot be cleaned up is stated rather than pretended about:
+SIGKILL, power loss, a child that escapes into its own session, and a turn
+off the main thread.
 
 SPDX-License-Identifier: CC0-1.0
 """
@@ -140,32 +39,27 @@ from typing import (
 from .errors import BridgeError, Failure
 
 #: The bound on a readiness check: the cheap version, sign-in and switch
-#: questions a connector asks before any work starts. It is not a deadline on
-#: the work itself - ordinary AI work has none - and it is the only default
-#: bound this module names.
+#: questions a connector asks before any work starts. It is not a deadline
+#: on the work itself, which has none.
 READINESS_TIMEOUT_SECONDS = 120.0
 
-#: How long a polite termination is given to empty the process group. Bounded
-#: separately from the call deadline, which may already have run out.
+#: How long a polite termination is given to empty the process group.
 CLEANUP_GRACE_SECONDS = 5.0
 
-#: How long an unconditional kill is then given. After this the turn reports
-#: `CLEANUP_FAILURE` rather than pretending the group is gone.
+#: How long an unconditional kill is then given, before `CLEANUP_FAILURE`.
 ESCALATION_GRACE_SECONDS = 5.0
 
 #: Interval between the short looks that ask whether the group has emptied.
 POLL_SECONDS = 0.02
 
-#: How often a bounded call reports that it is still waiting, in seconds. The
-#: report is a check-in, not progress: it says the caller's own wait is still
-#: running and whether the child process is still alive, and nothing about
-#: the model. A turn that wants no reports leaves the hook unset.
+#: How often a bounded call reports that it is still waiting, in seconds.
+#: A check-in, not progress: it says the caller's wait is still running and
+#: whether the child process is still alive, and nothing about the model.
 HEARTBEAT_SECONDS = 30.0
 
 #: The prefix of the temporary files a started peer reads its body from and
 #: captures its output streams into. Files rather than pipes, so a bounded
-#: wait can read the progress a still-running peer has made without stealing
-#: bytes from the final result, and so no read can ever block the wait.
+#: wait can read progress without stealing bytes from the final result.
 PEER_FILE_PREFIX = "agent-bridge-peer-"
 
 #: Whether the process-group twins below run their Windows branches, decided
@@ -176,109 +70,66 @@ WINDOWS = os.name == "nt"
 
 #: The Windows creation flag that makes the child the leader of a brand-new
 #: process group numbered by its own process id: the twin of
-#: `start_new_session`. It does not exist on POSIX, where the flag is not
-#: used and a missing constant reads as zero.
+#: `start_new_session`. A missing constant reads as zero on POSIX.
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
-#: The Windows console signal that can be sent to a whole process group. It
-#: exists only on Windows; where it does not, there is no courtesy signal to
-#: send and the forced phase is the whole of termination.
+#: The Windows console signal that can be sent to a whole process group.
 _CTRL_BREAK_EVENT = getattr(signal, "CTRL_BREAK_EVENT", None)
 
-#: The escalation signal, resolved once here rather than named per call,
-#: because Windows CPython defines no `SIGKILL`: naming it inside a Windows
-#: branch would raise `AttributeError` before any of that platform's cleanup
-#: could run. On POSIX it is the real `SIGKILL` and the escalation below
-#: behaves as it always did; on Windows the sentinel resolves to `None` and
-#: no branch names the attribute, because there is no escalation signal to
-#: send there - the forced phase is the kill-on-close job's release.
+#: The escalation signal, resolved once here because Windows CPython defines
+#: no `SIGKILL`: there it resolves to None and the forced phase is the
+#: kill-on-close job's release.
 _SIGKILL = getattr(signal, "SIGKILL", None)
 
 #: The exit status `taskkill` reports for a pid it could not find. Its tree
-#: walk starts at the root, so once the root has exited the report names no
-#: descendant and empties nothing: it is read as the emptiness answer only
-#: where ownership that outlives the root - the kill-on-close job below - has
-#: already been released.
+#: walk starts at the root, so it is read as the emptiness answer only after
+#: the kill-on-close job has been released.
 _TASKKILL_NOT_FOUND = 128
 
-#: The job-object information class of the extended-limits structure, one of
-#: the plain numbers the Windows API passes beside the structure itself.
+#: The job-object information class of the extended-limits structure.
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 
-#: The one job limit this module sets. The kernel terminates every process in
-#: the job when the last handle to it closes, which turns handle ownership
-#: into tree ownership that survives any member's exit, the root's included.
+#: The one job limit this module sets: the kernel terminates every process
+#: in the job when the last handle to it closes.
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 
-#: The process access the job assignment needs: the right to place the
-#: process in a job, and the right the job's own termination uses.
+#: The process access the job assignment needs.
 _PROCESS_SET_QUOTA = 0x0100
 _PROCESS_TERMINATE = 0x0001
 
 #: The Windows creation flag that starts the child with its primary thread
-#: suspended: none of the child's own instructions run until `ResumeThread`
-#: is called on that thread, which is what makes job membership precede the
-#: first moment a descendant could exist. The `subprocess` module names no
-#: constant of its own for the flag - its creation-flag exports stop at
-#: `CREATE_BREAKAWAY_FROM_JOB` - so the documented flag value is written here
-#: directly, like the plain Windows numbers around it.
+#: suspended, so job membership precedes the first moment a descendant could
+#: exist. `subprocess` names no constant of its own for it.
 _CREATE_SUSPENDED = 0x00000004
 
-#: The toolhelp snapshot flag that includes every thread in the system: the
-#: documented way to find a process's threads from its pid alone, which is
-#: how the suspended root's primary thread is reached for the resume.
+#: The toolhelp snapshot flag that includes every thread in the system.
 _TH32CS_SNAPTHREAD = 0x00000004
 
-#: The thread access the resume needs, and all of it: the one right
-#: `ResumeThread` itself requires, asked of the primary thread and nothing
-#: wider.
+#: The thread access the resume needs, and all of it.
 _THREAD_SUSPEND_RESUME = 0x0002
 
-#: What `ResumeThread` returns when it fails: `(DWORD)-1`, unlike every
-#: successful answer, which is a previous suspend count.
+#: What `ResumeThread` returns when it fails: `(DWORD)-1`.
 _RESUME_FAILED = 0xFFFFFFFF
 
 
 class Deadline(object):
     """One bound for a turn's non-work steps, made once and passed down.
 
-    `seconds` bounds the readiness questions a connector asks - version,
-    sign-in, switch probes - which are not AI work and may be ended when they
-    overrun. `work_seconds` names the bound on the work itself, and it is
-    infinite in every turn the runner starts: no arbitrary elapsed-time
-    cutoff may kill a healthy task, so a connector that can pass a native
-    elapsed-time switch reads `work_seconds`, never `seconds`, to decide
-    whether the child gets one at all.
-
-    Created at the start of a `run` and handed to every waiting step, so
-    prechecks and probes draw on one budget rather than each getting a fresh
-    one. An explicit no-timeout run uses positive infinity; cleanup always
-    keeps its separate finite grace.
-
-    `heartbeat` is an optional no-result callback the bounded wait invokes
-    while a program is still running, roughly once per `HEARTBEAT_SECONDS`.
-    It receives the seconds elapsed since this deadline was made and whether
-    the child process is still running. Because every bounded step already
-    holds this one object, the callback reaches prerequisite probes and the
-    peer call alike without either gaining a parameter. It is unset for every
-    command that has not asked for check-ins.
+    `seconds` bounds the readiness questions a connector asks, which are not
+    AI work and may be ended when they overrun; the work itself has no
+    elapsed-time deadline in any turn the runner starts. `heartbeat` is an
+    optional no-result callback the bounded wait invokes roughly once per
+    `HEARTBEAT_SECONDS`.
     """
 
-    def __init__(self, seconds: float, work_seconds: Optional[float] = None) -> None:
+    def __init__(self, seconds: float) -> None:
         self.seconds = float(seconds)
-        self.work_seconds = float(
-            seconds if work_seconds is None else work_seconds
-        )
         self._started = time.monotonic()
         self.heartbeat = None  # type: Optional[Callable[[float, bool], None]]
 
     def remaining(self) -> float:
         """Seconds left; zero or less once the deadline has passed."""
         return self.seconds - (time.monotonic() - self._started)
-
-    def elapsed(self) -> float:
-        """Seconds spent since this deadline was made."""
-        return time.monotonic() - self._started
 
     def check(self, detail: Optional[str] = None) -> None:
         """Stop now if the deadline has already passed."""
@@ -297,11 +148,9 @@ class CompletedCall(NamedTuple):
 class SignalStop(Exception):
     """Somebody asked this turn to stop while it was under way.
 
-    Raised from inside a signal handler so that a termination or a hangup
-    leaves by the ordinary route - through the cleanup that terminates the
-    process group and releases the session lock - instead of ending the process
-    where it stands. It is deliberately not one of the internal failures:
-    nothing went wrong with the turn, it was stopped.
+    Raised from inside a signal handler so a termination or hangup leaves by
+    the ordinary route - through the cleanup - instead of ending the process
+    where it stands.
     """
 
     def __init__(self, number: int) -> None:
@@ -313,19 +162,16 @@ class SignalStop(Exception):
 
 
 #: The two signals a turn turns into `SignalStop`. SIGHUP does not exist on
-#: Windows, where SIGTERM is the one deliverable termination signal, so the
-#: pair is named without it there rather than failing to import at all.
+#: Windows, where SIGTERM is the one deliverable termination signal.
 STOP_SIGNALS: Tuple[int, ...] = (
     (signal.SIGTERM, signal.SIGHUP)
     if hasattr(signal, "SIGHUP")
     else (signal.SIGTERM,)
 )
 
-#: An interrupt from the keyboard goes on raising `KeyboardInterrupt`, exactly
-#: as it always did. It is handled here all the same, and for one reason only:
-#: a handler of our own can be made to wait through the two moments below,
-#: where Python's cannot. Ctrl-C is how a person ordinarily stops a program, so
-#: leaving it out would leave the commonest stop able to strand a peer.
+#: An interrupt from the keyboard keeps raising `KeyboardInterrupt`. It is
+#: handled here all the same, because a handler of our own can be made to
+#: wait through the moments below, where Python's cannot.
 INTERRUPT_SIGNALS: Tuple[int, ...] = (signal.SIGINT,)
 
 #: Every signal handled here, in the order they are installed.
@@ -342,26 +188,12 @@ def _stop_exception(number: int) -> BaseException:
 class StopWatch(object):
     """When a stop raises where it lands, and when it waits its turn.
 
-    A stop that raises where it lands is what makes it leave through the cleanup
-    around the caller instead of ending the process where it stands. That is
-    right for exactly one stretch of a turn - the wait for the program's answer
-    - and wrong for the rest of it, where a running child either has nothing yet
-    responsible for it or is in the middle of being cleaned up.
-
-    So the arrangement is the other way round from what it might seem. For the
-    whole life of the child a stop is deferred: written down, and raised once
-    the stretch it arrived in is over. `allowing()` opens the one window where
-    it raises immediately, and that window sits inside the cleanup that catches
-    it. There is therefore no instruction anywhere between the child appearing
-    and the group being empty at which a stop can leave without cleanup running.
-
-    Deferral changes when a stop is raised, never whether. Only the first is
-    remembered, because they all mean the same thing: the turn is being stopped,
-    and it leaves once.
-
-    The state lives on the object, not in the module, so it belongs to exactly
-    one `stopped_by_signal` region. Nothing can be left behind for a later turn
-    to trip over.
+    For the whole life of the child a stop is deferred: written down, and
+    raised once the stretch it arrived in is over. `allowing()` opens the one
+    window where it raises immediately, and that window sits inside the
+    cleanup that catches it. Deferral changes when a stop is raised, never
+    whether; only the first is remembered. The state lives on the object, so
+    it belongs to exactly one `stopped_by_signal` region.
     """
 
     def __init__(self) -> None:
@@ -389,14 +221,8 @@ class StopWatch(object):
     def allowing(self) -> Iterator[None]:
         """Inside this block a stop raises again. Only valid inside `deferring`.
 
-        Reopening the door is what makes a stop interrupt the wait for an
-        answer, which is the whole point of handling one. The block must sit
-        inside a `deferring()` block whose cleanup will catch what it raises.
-
-        A stop that arrived before the door opened is raised as it opens, rather
-        than left to be noticed later. Otherwise a turn already told to stop
-        would go on and wait out its whole deadline for an answer nobody is
-        waiting for any more.
+        A stop that arrived before the door opened is raised as it opens, so
+        a turn already told to stop does not go on waiting out its deadline.
         """
         self._deferrals -= 1
         try:
@@ -416,11 +242,8 @@ class StopWatch(object):
 def stopped_by_signal() -> Iterator[StopWatch]:
     """Make termination and hangup raise, and put the handlers back after.
 
-    Installing a handler is only possible on the main thread. Somewhere else it
-    is impossible rather than wrong, so the block runs without them: losing a
-    tidy exit is a smaller harm than refusing to do the work at all. The watch
-    is still yielded in that case and simply never fires, so callers need no
-    second shape of code for it.
+    Installing a handler is only possible on the main thread; elsewhere the
+    block runs without them, and the watch is still yielded and never fires.
     """
     watch = StopWatch()
     installed = []
@@ -439,42 +262,15 @@ def stopped_by_signal() -> Iterator[StopWatch]:
                 pass
 
 
-class PeerTimeout(BridgeError):
-    """`TIMEOUT`, carrying what the program had already said.
-
-    A timed-out call still produced evidence: whatever the program wrote before
-    the deadline, and the process id of the group that was terminated. Both are
-    kept on the exception because they are the only account of what happened,
-    and because confirming that nothing was orphaned means naming processes by
-    their own identity rather than by what they were called.
-    """
-
-    def __init__(
-        self, pid: int, stdout: str, stderr: str, detail: Optional[str] = None
-    ) -> None:
-        super().__init__(Failure.TIMEOUT, detail=detail)
-        self.pid = pid
-        self.stdout = stdout
-        self.stderr = stderr
-
-
 def _windows_taskkill(pgid: int) -> bool:
     """Force the owned process tree to terminate; say whether it was found.
 
     `taskkill /T` walks the descendant tree from the root pid and `/F`
-    terminates every process it names, which is the one reliable way to reach
-    grandchildren on Windows. The stdlib offers nothing that does: `os.kill`
-    maps every non-console signal, zero included, to `TerminateProcess` on
-    the one named process - so the usual signal-zero emptiness question would
-    itself be a kill - and its console events reach only processes sharing
-    this console and are ignored by any child that installed a handler. But
-    the walk starts at the root: once the root has exited, the not-found
-    report names no descendant and empties nothing. That report is therefore
-    an emptiness answer only through the job - the caller asks after the
-    job's close has terminated every member, and a tree taskkill cannot then
-    find is one the kernel has already emptied. Success means something was
-    found and has now been terminated, and anything else is a cleanup
-    failure named here.
+    terminates every process it names, the one reliable way to reach
+    grandchildren on Windows. But the walk starts at the root: once the root
+    has exited, the not-found report names no descendant and empties nothing,
+    so that report is an emptiness answer only after the job's close has
+    already terminated every member.
     """
     try:
         completed = subprocess.run(
@@ -511,11 +307,8 @@ def _windows_taskkill(pgid: int) -> bool:
 
 
 def _windows_kernel32():
-    """kernel32 through ctypes, with the last error kept for the details.
-
-    Resolved per call rather than at import, so the import surface of a POSIX
-    process is exactly what it always was.
-    """
+    """kernel32 through ctypes, resolved per call so a POSIX process never
+    imports it at module load."""
     import ctypes
 
     return ctypes.WinDLL("kernel32", use_last_error=True)
@@ -524,12 +317,10 @@ def _windows_kernel32():
 def _windows_job_information():
     """The extended-limits structure for one kill-on-close job, freshly built.
 
-    Only the ctypes shapes of the Windows API are declared here, and the one
-    fact that must be right is the byte layout `SetInformationJobObject`
-    expects - which is why the declaration lives in a function any platform
-    can import and the unit checks can measure. Every limit stays zero but
-    the one flag: the kernel terminates the job's processes when the last
-    handle to it closes.
+    Only the ctypes shapes are declared here; the one fact that must be right
+    is the byte layout `SetInformationJobObject` expects, which is why the
+    declaration lives in a function any platform can import and the unit
+    checks can measure.
     """
     import ctypes
 
@@ -579,21 +370,13 @@ def _windows_job_information():
 def _windows_own_tree(process: "subprocess.Popen") -> int:
     """Place the suspended child in a kill-on-close job; return the job handle.
 
-    The child's primary thread has not run when this is called - the creation
-    left it suspended - so the assignment happens while there is nothing yet
-    beside the child for any job to miss. A process handle with exactly the
-    access the assignment needs is opened on the child's own pid - nothing
-    private of the child's is reached for - and the child is assigned to a
-    fresh job with no name and no limits but the one. Everything the child
-    later starts is a member of that job too, because a member's children are
-    members and the job allows no breakaway, so the handle is ownership of a
-    tree that survives the root's own exit: the kernel terminates every
-    member when the last handle closes, whether that close is this code's in
-    cleanup or the operating system's at the end of this process.
-
-    Raises `CLEANUP_FAILURE` naming the step that refused, so the caller can
-    end what it just started - still suspended, still childless - rather
-    than run a tree nobody owns.
+    The child's primary thread has not run when this is called, so the
+    assignment happens while there is nothing yet beside the child for any
+    job to miss. Everything the child later starts is a member too, and the
+    kernel terminates every member when the last handle closes - this code's
+    in cleanup or the operating system's at the end of this process. Raises
+    `CLEANUP_FAILURE` naming the step that refused, so the caller can end
+    what it just started rather than run a tree nobody owns.
     """
     import ctypes
 
@@ -661,12 +444,8 @@ def _windows_own_tree(process: "subprocess.Popen") -> int:
 def _windows_thread_entry():
     """The toolhelp thread record, freshly built, `dwSize` still to be set.
 
-    Only the ctypes shape of `THREADENTRY32` is declared here, and the one
-    fact that must be right is the byte layout `Thread32First` and
-    `Thread32Next` fill - which is why the declaration lives in a function
-    any platform can import and the unit checks can measure. Of the seven
-    fields, two are read on the Windows path: the owning process id the
-    snapshot is filtered by, and the thread id the resume is asked of.
+    Of the seven fields, two are read on the Windows path: the owning process
+    id the snapshot is filtered by, and the thread id the resume is asked of.
     """
     import ctypes
 
@@ -687,27 +466,13 @@ def _windows_thread_entry():
 def _windows_resume_root(process: "subprocess.Popen") -> None:
     """Resume the suspended root: the step that first lets its code run.
 
-    The root was created suspended, so nothing of it has executed when this
-    is called and no descendant exists; the kill-on-close job has already
-    been assigned, so the first instruction that runs - and every process
-    it goes on to start, from its first action on - runs inside an
-    ownership that is already standing. That ordering is the whole of the
-    correction: there is no moment at which the child can execute, or can
-    have started a descendant, outside the job.
-
-    The primary thread is found rather than remembered: `Popen` keeps the
-    process handle and closes the thread handle from creation, so the
-    thread is named through the toolhelp thread snapshot, which the
-    platform documents for exactly this question - enumerate the threads
-    and keep those whose `th32OwnerProcessID` is the process in hand. A
-    process whose primary thread has never run has created no other
-    threads, so the threads found are the primary thread alone, and it is
-    opened with the one access right `ResumeThread` requires.
-
-    Raises `CLEANUP_FAILURE` naming the step that refused, so the caller
-    can end what it started - still suspended, still childless - and
-    refuse the turn rather than run a tree whose first thread it could
-    not set going.
+    The kill-on-close job has already been assigned, so the first instruction
+    that runs - and every process it goes on to start - runs inside an
+    ownership that is already standing. The primary thread is found rather
+    than remembered: `Popen` closes the thread handle from creation, so the
+    thread is named through the toolhelp thread snapshot. A never-run process
+    has created no other threads, so the threads found are the primary thread
+    alone. Raises `CLEANUP_FAILURE` naming the step that refused.
     """
     import ctypes
 
@@ -772,10 +537,7 @@ def _windows_resume_root(process: "subprocess.Popen") -> None:
     if step is not None:
         raise refused(step, code)
     if not resumed:
-        # No thread of the process was in the snapshot at all, which a
-        # never-run process cannot explain by exiting - its thread cannot
-        # have run to an exit. The turn is refused rather than guessed
-        # about, exactly as for a step that refused.
+        # A never-run process cannot explain an absent thread by exiting.
         raise BridgeError(
             Failure.CLEANUP_FAILURE,
             detail=(
@@ -789,20 +551,10 @@ def _windows_resume_root(process: "subprocess.Popen") -> None:
 
 def _windows_end_root(process: "subprocess.Popen") -> None:
     """Terminate the started root outright: the deterministic end of a
-    child that never ran.
-
-    Reached on the two refusals that follow a suspended creation - the job
-    could not be established, or the root could not be resumed. In both,
-    nothing of the child's code has ever executed, so no descendant exists
-    and the root alone is the whole of what must end. A process handle with
-    exactly the right termination needs is opened on the child's own pid,
-    as the assignment's was, and `TerminateProcess` is the whole of the
-    ending: a suspended process can neither resist it nor postpone it, and
-    there is nothing beside the root for a tree walk to be needed for.
-
-    Raises `CLEANUP_FAILURE` naming the step that refused rather than
-    pretending a survivor is gone.
-    """
+    child that never ran. Reached on the two refusals that follow a
+    suspended creation; nothing beside the root can exist yet, so
+    `TerminateProcess` on the child's own pid is the whole of the ending.
+    Raises `CLEANUP_FAILURE` naming the step that refused."""
     import ctypes
 
     def refused(step, code):
@@ -840,11 +592,8 @@ def _windows_release_job(job: int) -> None:
     """Close the job handle, which is the whole of the forced phase.
 
     The kernel terminates every member of a kill-on-close job when its last
-    handle closes - this code holds the only one - reaching a descendant
-    that outlived its root exactly as it reaches the root itself. A close
-    that fails is the cleanup failure that gets reported, not something to
-    paper over: a job left open is a tree left standing by nobody's
-    decision.
+    handle closes. A close that fails is the cleanup failure that gets
+    reported, not something to paper over.
     """
     import ctypes
 
@@ -864,17 +613,8 @@ def _windows_release_job(job: int) -> None:
 def _group_gone(pgid: int) -> bool:
     """Is the process group empty? Signal zero asks without disturbing it.
 
-    A process that has died but not yet been collected by its parent still
-    answers, so the direct child must be collected before this answer means
-    anything.
-
-    On Windows there is no signal-zero question to ask - `os.kill` there
-    terminates the named process for any non-console signal, zero included -
-    so the emptiness answer comes from the forced tree termination, read
-    through the job: the caller asks after the job's close has terminated
-    every member, so a tree taskkill cannot find is one the kernel has
-    already emptied, and a tree it finds is terminated by the asking, which
-    during cleanup is what the question wanted anyway.
+    On Windows there is no signal-zero question to ask, so the emptiness
+    answer comes from the forced tree termination, read through the job.
     """
     if WINDOWS:
         return _windows_taskkill(pgid)
@@ -882,8 +622,6 @@ def _group_gone(pgid: int) -> bool:
         os.killpg(pgid, 0)
     except ProcessLookupError:
         return True
-    except PermissionError:
-        return False
     except OSError:
         return False
     return False
@@ -902,16 +640,11 @@ def _await_group_gone(pgid: int, grace: float) -> bool:
 def _signal_group(pgid: int, number: Optional[int]) -> None:
     """Signal exactly the group this turn started.
 
-    On POSIX that is one signal to the group - the polite termination or the
-    `SIGKILL` escalation - with the escalation named through the `_SIGKILL`
-    sentinel rather than a signal attribute Windows CPython could not
-    define, so no branch reaches for a missing attribute. On Windows there
-    is no escalation signal to send at all: the polite signal is the console
-    break event the group was created to receive - a courtesy a child may
-    ignore and a console-less caller cannot send, so its failure is
-    swallowed - and the guarantee lives in the forced phase, where closing
-    the kill-on-close job makes the kernel terminate every member. A group
-    that is already gone is left alone, either way.
+    On POSIX that is one signal to the group, with the escalation named
+    through the `_SIGKILL` sentinel so no branch reaches for a signal
+    attribute Windows CPython could not define. On Windows the polite signal
+    is the console break event - a courtesy whose failure is swallowed - and
+    the guarantee lives in the forced phase, the job handle's close.
     """
     if WINDOWS:
         if _CTRL_BREAK_EVENT is not None:
@@ -950,75 +683,22 @@ def _close_streams(process: "subprocess.Popen") -> None:
             pass
 
 
-def _own_group(process: "subprocess.Popen") -> int:
-    """The process group this turn owns, confirmed to be the child's own.
-
-    Read once, immediately after the child has been started. The child was
-    asked to become a session leader, so its group number must equal its own
-    process id. If it does not, this turn does not own a group it can safely
-    signal, and it says so instead of signalling anything.
-
-    On Windows the same fact comes from the spawn flag instead of a read-back:
-    `CREATE_NEW_PROCESS_GROUP` makes the child the leader of a brand-new group
-    numbered by its own process id, so the flag is the confirmation and there
-    is nothing to consult.
-    """
-    if WINDOWS:
-        return process.pid
-    try:
-        pgid = os.getpgid(process.pid)
-    except OSError as exc:
-        _close_streams(process)
-        raise BridgeError(
-            Failure.CLEANUP_FAILURE,
-            detail="cannot read the process group of {0}: {1}".format(
-                process.pid, exc
-            ),
-        )
-    if pgid != process.pid:
-        _close_streams(process)
-        raise BridgeError(
-            Failure.CLEANUP_FAILURE,
-            detail=(
-                "process {0} is in group {1}, which this turn does not own, "
-                "so nothing was signalled".format(process.pid, pgid)
-            ),
-        )
-    return pgid
-
-
 def _cleanup_group(
     process: "subprocess.Popen", pgid: int, job: Optional[int] = None
 ) -> None:
     """Terminate exactly the group this turn started, and confirm it is empty.
 
-    Asks politely first, collects the direct child so a corpse cannot be
-    mistaken for a survivor, and escalates against the same group only. On
-    POSIX the escalation is the `_SIGKILL` sentinel, not a named attribute,
-    because Windows CPython defines no such signal; nothing about the POSIX
-    sequence below changes with the Windows addition. If anything in the
-    group is still there after the escalation grace, that is
-    `CLEANUP_FAILURE`: an unreported survivor would be worse than a visible
-    failure.
-
-    On Windows the forced phase is the job handle's close, and the order of
-    the two steps is the correction. taskkill's tree walk starts at the
-    root, so a root that has already exited leaves its not-found report
-    saying nothing about the descendants it would have named - exactly the
-    moment a surviving orphan is on its own - and the kill-on-close job is
-    the owner that is still standing in it. The handle is closed first and
-    the kernel terminates every member for having been in the job; the root
-    is collected again after the close so its corpse cannot be mistaken for
-    a survivor; only then does the not-found report become the emptiness
-    answer. Without a job there is nothing honest to confirm at all -
-    unreachable while a Windows spawn refuses to run without one - so the
-    turn says so instead of guessing.
+    The child was started as its own session leader (POSIX) or with
+    `CREATE_NEW_PROCESS_GROUP` (Windows), so its process id is the group
+    this turn owns. Asks politely first, collects the direct child, and
+    escalates against the same group only; a survivor after the escalation
+    grace is `CLEANUP_FAILURE`. On Windows the forced phase is the job
+    handle's close: the handle is closed first and the kernel terminates
+    every member; only then does the taskkill not-found report become the
+    emptiness answer, because a tree walk from a root that no longer exists
+    cannot speak for the descendants it would have named. Without a job
+    there is nothing honest to confirm at all, so the turn says so.
     """
-    if pgid != process.pid:
-        raise BridgeError(
-            Failure.CLEANUP_FAILURE,
-            detail="refusing to signal group {0}".format(pgid),
-        )
     if WINDOWS:
         _signal_group(pgid, signal.SIGTERM)
         _reap(process, CLEANUP_GRACE_SECONDS)
@@ -1057,12 +737,11 @@ class PeerCall(object):
     """One started peer program, owned, whose waits never kill it.
 
     The body the peer reads and the streams it writes live in temporary
-    files rather than pipes, so reading the progress a still-running peer
-    has made - which is the only account of what a bounded wait returned
-    control from - never steals bytes from the final result and never
-    blocks. `wait` ends when the peer does, when its named bound runs out
-    (leaving the peer running), or when somebody stops the run; `outcome` is
-    the complete captured result once the peer has finished.
+    files rather than pipes, so reading progress never steals bytes from
+    the final result and never blocks. `wait` ends when the peer does, when
+    its named bound runs out (leaving the peer running), or when somebody
+    stops the run; `outcome` is the complete captured result once the peer
+    has finished.
     """
 
     def __init__(self, process, pgid, job, watch, started, paths):
@@ -1103,10 +782,8 @@ class PeerCall(object):
         """Wait for the peer to finish.
 
         True when the peer has exited. False only when a named bounded wait
-        ran out first, with the peer still running and nothing cleaned up:
-        the caller keeps the means to wait again, collect the outcome, or
-        stop the run. A stop raises where it lands, exactly as in
-        `run_bounded`.
+        ran out first, with the peer still running and nothing cleaned up.
+        A stop raises where it lands, exactly as in `run_bounded`.
         """
         limit = (
             None if seconds is None else time.monotonic() + max(0.0, float(seconds))
@@ -1172,11 +849,10 @@ def start_call(
     """Start one peer program under this module's ownership, without a deadline.
 
     The spawn, group ownership and stop discipline are exactly `run_bounded`'s;
-    the difference is what ends the waiting. Nothing here kills the program on
-    a clock: the caller's bounded waits return control with the peer running,
-    and the group is emptied only when the caller finishes with the call -
-    normally, by cancellation, or by a stop - or never, after `retain()`, which
-    is the deliberate release of a peer a caller chose to leave working.
+    the difference is what ends the waiting. Nothing here kills the program
+    on a clock: the caller's bounded waits return control with the peer
+    running, and the group is emptied only when the caller finishes with the
+    call - or never, after `retain()`.
     """
     payload = stdin_text.encode("utf-8")
     paths = []  # type: List[str]
@@ -1245,12 +921,14 @@ def start_call(
                 except BaseException:
                     _remove_files(paths)
                     raise
-                pgid = _own_group(process)
+                # The child was started as its own session leader (or with
+                # the Windows process-group flag), so its pid is the group
+                # this turn owns.
+                pgid = process.pid
                 if WINDOWS:
-                    # Ownership is established before execution, as in
-                    # `run_bounded`; a platform that refuses the job or the
-                    # resume refuses the turn, and what was started has never
-                    # run.
+                    # Ownership is established before execution: a platform
+                    # that refuses the job or the resume refuses the turn,
+                    # and what was started has never run.
                     try:
                         job = _windows_own_tree(process)
                         _windows_resume_root(process)
@@ -1271,8 +949,7 @@ def start_call(
                     try:
                         if call is None or not call.retained:
                             # Still deferred, so a second stop cannot abandon
-                            # this half done, and the ownership checks below
-                            # are the same ones `run_bounded` makes.
+                            # this half done.
                             if pgid is not None:
                                 _cleanup_group(process, pgid, job)
                     finally:
@@ -1282,12 +959,10 @@ def start_call(
                         else:
                             # A retained peer keeps its captured output for a
                             # person to inspect; the body file it read is the
-                            # request already published in the session, so it
-                            # goes.
+                            # request already published in the session.
                             _remove_files(paths[:1])
         # Nothing this turn started is left, unless it was deliberately
-        # retained, so a stop that arrived while it was being deferred can be
-        # raised now without leaving anything behind.
+        # retained, so a deferred stop can be raised now.
         watch.raise_if_stopped()
 
 
@@ -1301,21 +976,12 @@ def run_bounded(
 ) -> CompletedCall:
     """Run one bounded program to completion, and clean up after it.
 
-    This is the readiness shape of a call: a cheap question a connector asks,
-    bounded by the deadline it was handed, because a question that will not
-    answer is not work worth waiting on. The work shape is `start_call`,
-    which nothing kills on a clock.
-
-    `argv` is a fixed argument vector run without a shell. `stdin_text` is
-    written to the program's standard input and the input is then closed, so a
-    program that reads to end-of-file gets everything and then stops waiting.
-
-    Raises `PeerTimeout` (a `TIMEOUT`) when the deadline passes first, the given
-    `spawn_failure` when the program could not be started at all, and
-    `CLEANUP_FAILURE` when something this turn started outlived it, or when
-    the platform would not let this turn own what it started. Raises
-    `SignalStop` when somebody terminates or hangs up Ora Agent Bridge while the
-    program is running. Cleanup runs on every one of those exit paths, and on
+    This is the readiness shape of a call: a cheap question a connector
+    asks, bounded by the deadline it was handed. Raises `TIMEOUT` when the
+    deadline passes first, the given `spawn_failure` when the program could
+    not be started, `CLEANUP_FAILURE` when something this turn started
+    outlived it, and `SignalStop` when somebody stops Ora Agent Bridge
+    while the program is running. Cleanup runs on every exit path, and on
     success too.
     """
     remaining = deadline.remaining()
@@ -1324,12 +990,9 @@ def run_bounded(
     with start_call(argv, cwd, env, stdin_text, spawn_failure) as call:
         finished = call.wait(remaining, heartbeat=deadline.heartbeat)
         outcome = call.outcome()
-        pid = call.pid
     if not finished:
-        raise PeerTimeout(
-            pid=pid,
-            stdout=outcome.stdout,
-            stderr=outcome.stderr,
+        raise BridgeError(
+            Failure.TIMEOUT,
             detail="{0} after {1:.0f}s".format(argv[0], deadline.seconds),
         )
     return outcome
